@@ -1,6 +1,4 @@
-# This is a custom overlay that adds subscription nag removal
-# It's designed to be used after the main build
-
+# Build from the base image we just built
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
@@ -14,3 +12,8 @@ RUN chmod +x /runit/proxmox-remove-subscription/run
 
 # Ensure all runit services are executable
 RUN find /runit -name "run" -type f -exec chmod +x {} \;
+
+# Set environment variable defaults
+ENV PBS_ENTERPRISE=yes \
+    PBS_NO_SUBSCRIPTION=yes \
+    DISABLE_SUBSCRIPTION_NAG=yes
