@@ -1,0 +1,4 @@
+{
+  "enabled_workflows": ["build_custom"],
+  "disable_upstream": true
+}
