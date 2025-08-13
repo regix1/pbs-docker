@@ -1,0 +1,42 @@
+#!/bin/sh
+exec 2>&1
+
+SERVICE_NAME="proxmox-remove-subscription"
+LOCK_FILE="/tmp/.pbs-subscription-nag-removed"
+POST_INSTALL_SCRIPT="/etc/proxmox-backup-default/pbs-post-install.sh"
+MARKER_FILE="/var/lib/proxmox-backup/.subscription-nag-disabled"
+
+echo "[$SERVICE_NAME] Starting service..."
+
+# Check if already completed
+if [ -f "$LOCK_FILE" ] || [ -f "$MARKER_FILE" ]; then
+    echo "[$SERVICE_NAME] Subscription nag already removed, sleeping..."
+    exec sleep infinity
+fi
+
+# Wait for PBS API to be ready
+echo "[$SERVICE_NAME] Waiting for PBS API to start..."
+for i in $(seq 1 60); do
+    if curl -k -s https://localhost:8007/ > /dev/null 2>&1; then
+        echo "[$SERVICE_NAME] PBS API is ready"
+        break
+    fi
+    sleep 2
+done
+
+# Run the post-install script
+echo "[$SERVICE_NAME] Running PBS post-install configuration..."
+if [ -x "$POST_INSTALL_SCRIPT" ]; then
+    if "$POST_INSTALL_SCRIPT"; then
+        echo "[$SERVICE_NAME] Post-install script completed successfully"
+        touch "$LOCK_FILE"
+    else
+        echo "[$SERVICE_NAME] WARNING: Post-install script failed with exit code $?"
+        touch "$LOCK_FILE"
+    fi
+else
+    echo "[$SERVICE_NAME] ERROR: Post-install script not found or not executable"
+fi
+
+echo "[$SERVICE_NAME] Service complete, sleeping..."
+exec sleep infinity

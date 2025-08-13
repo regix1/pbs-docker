@@ -1,0 +1,16 @@
+# This is a custom overlay that adds subscription nag removal
+# It's designed to be used after the main build
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Copy the post-install script
+COPY dockerfiles/pbs/pbs-post-install.sh /etc/proxmox-backup-default/pbs-post-install.sh
+RUN chmod +x /etc/proxmox-backup-default/pbs-post-install.sh
+
+# Add the runit service for subscription removal
+COPY dockerfiles/runit/proxmox-remove-subscription /runit/proxmox-remove-subscription
+RUN chmod +x /runit/proxmox-remove-subscription/run
+
+# Ensure all runit services are executable
+RUN find /runit -name "run" -type f -exec chmod +x {} \;
