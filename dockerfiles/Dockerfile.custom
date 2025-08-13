@@ -1,8 +1,9 @@
-# Build from the base image we just built
+# Custom Dockerfile that adds subscription nag removal on top of base PBS image
+# This layers on top of the image built from Dockerfile.build
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# Copy the post-install script
+# Copy the post-install script from your repo
 COPY dockerfiles/pbs/pbs-post-install.sh /etc/proxmox-backup-default/pbs-post-install.sh
 RUN chmod +x /etc/proxmox-backup-default/pbs-post-install.sh
 
@@ -13,7 +14,7 @@ RUN chmod +x /runit/proxmox-remove-subscription/run
 # Ensure all runit services are executable
 RUN find /runit -name "run" -type f -exec chmod +x {} \;
 
-# Set environment variable defaults
+# Set environment variable defaults for subscription removal
 ENV PBS_ENTERPRISE=yes \
     PBS_NO_SUBSCRIPTION=yes \
     DISABLE_SUBSCRIPTION_NAG=yes
