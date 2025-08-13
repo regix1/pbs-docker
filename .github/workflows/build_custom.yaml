@@ -1,12 +1,12 @@
-name: Build and Release Docker Images
+name: Release PBS Docker Images
 
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
-      tag_override:
-        description: 'Override tag name (leave empty to use release tag)'
+      tag_name:
+        description: 'Tag name for manual release (e.g., v4.0.13-1)'
         required: false
         default: ''
 
@@ -15,91 +15,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-base:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-            platform: linux/amd64
-          - arch: arm64
-            runner: ubuntu-24.04-arm  # Native ARM64 runner
-            platform: linux/arm64
-    
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-      packages: write
-    
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Set up QEMU (AMD64 only)
-      if: matrix.arch == 'amd64'
-      uses: docker/setup-qemu-action@v3
-      with:
-        platforms: linux/amd64
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Define version and tag
-      id: version
-      run: |
-        # Get version from release tag or workflow dispatch input
-        if [[ "${{ github.event_name }}" == "release" ]]; then
-          VERSION="${{ github.event.release.tag_name }}"
-          TAG="${{ github.event.release.tag_name }}"
-        elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_override }}" ]]; then
-          VERSION="${{ inputs.tag_override }}"
-          TAG="${{ inputs.tag_override }}"
-        elif [ -f VERSION ]; then
-          VERSION=$(cat VERSION)
-          TAG="v${VERSION}"
-        else
-          VERSION=$(date +%Y%m%d)-${{ github.run_number }}
-          TAG="v${VERSION}"
-        fi
-        
-        # Remove 'v' prefix if present for VERSION
-        VERSION=${VERSION#v}
-        
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
-        echo "tag=${TAG}" >> $GITHUB_OUTPUT
-        echo "Building version: ${VERSION}, tag: ${TAG}"
-        echo "Running on native $(uname -m) architecture"
-
-    # Build the BASE PBS image using custom Dockerfile
-    - name: Build base PBS from source
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: dockerfiles/Dockerfile.build.custom
-        platforms: ${{ matrix.platform }}
-        push: true
-        tags: |
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ github.sha }}
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ steps.version.outputs.tag }}
-        cache-from: type=gha,scope=base-${{ matrix.arch }}
-        cache-to: type=gha,mode=max,scope=base-${{ matrix.arch }}
-        build-args: |
-          VERSION=${{ steps.version.outputs.version }}
-          TAG=${{ steps.version.outputs.tag }}
-          IMAGE_PREFIX=${{ matrix.arch == 'arm64' && 'arm64v8/' || '' }}
-          TARGETARCH=${{ matrix.arch }}
-          ARCH=${{ matrix.arch }}
-
-  build-custom:
-    needs: build-base
+  build-and-push:
     strategy:
       fail-fast: false
       matrix:
@@ -113,9 +29,9 @@ jobs:
     
     runs-on: ${{ matrix.runner }}
     permissions:
-      contents: read
+      contents: write
       packages: write
-
+    
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -136,200 +52,183 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Define version and tag
+    - name: Determine version and tag
       id: version
       run: |
+        # Get tag from release event or workflow_dispatch input
         if [[ "${{ github.event_name }}" == "release" ]]; then
-          VERSION="${{ github.event.release.tag_name }}"
           TAG="${{ github.event.release.tag_name }}"
-        elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_override }}" ]]; then
-          VERSION="${{ inputs.tag_override }}"
-          TAG="${{ inputs.tag_override }}"
-        elif [ -f VERSION ]; then
-          VERSION=$(cat VERSION)
-          TAG="v${VERSION}"
+        elif [[ -n "${{ inputs.tag_name }}" ]]; then
+          TAG="${{ inputs.tag_name }}"
         else
-          VERSION=$(date +%Y%m%d)-${{ github.run_number }}
-          TAG="v${VERSION}"
+          echo "Error: No tag specified"
+          exit 1
         fi
         
-        VERSION=${VERSION#v}
+        # Remove 'v' prefix for VERSION if present
+        VERSION="${TAG#v}"
         
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
         echo "tag=${TAG}" >> $GITHUB_OUTPUT
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Building: TAG=${TAG}, VERSION=${VERSION}, ARCH=${{ matrix.arch }}"
 
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v5
+    # Build Stage 1: Base PBS image
+    - name: Build base PBS image
+      id: build-base
+      uses: docker/build-push-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        context: .
+        file: dockerfiles/Dockerfile.build.custom
+        platforms: ${{ matrix.platform }}
+        push: true
         tags: |
-          type=raw,value=${{ matrix.arch }}-${{ steps.version.outputs.tag }}
-          type=raw,value=${{ matrix.arch }}-latest
-          type=sha,prefix=${{ matrix.arch }}-,format=short
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ steps.version.outputs.tag }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ github.sha }}
+        cache-from: type=gha,scope=base-${{ matrix.arch }}
+        cache-to: type=gha,mode=max,scope=base-${{ matrix.arch }}
+        build-args: |
+          VERSION=${{ steps.version.outputs.version }}
+          TAG=${{ steps.version.outputs.tag }}
+          ARCH=${{ matrix.arch }}
+          IMAGE_PREFIX=${{ matrix.arch == 'arm64' && 'arm64v8/' || '' }}
+          TARGETARCH=${{ matrix.arch }}
 
-    # Apply the custom layer with subscription removal
-    - name: Build custom layer with no-nag
+    # Build Stage 2: Custom layer with subscription removal
+    - name: Build custom PBS image
       uses: docker/build-push-action@v5
       with:
         context: .
         file: dockerfiles/Dockerfile.custom
         platforms: ${{ matrix.platform }}
         push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-${{ steps.version.outputs.tag }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-latest
+        labels: |
+          org.opencontainers.image.title=Proxmox Backup Server
+          org.opencontainers.image.description=PBS with subscription nag removed
+          org.opencontainers.image.version=${{ steps.version.outputs.version }}
         cache-from: type=gha,scope=custom-${{ matrix.arch }}
         cache-to: type=gha,mode=max,scope=custom-${{ matrix.arch }}
         build-args: |
           BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ steps.version.outputs.tag }}
         provenance: false
 
+    # Extract and upload release assets (the .tgz files)
+    - name: Extract release assets from base image
+      if: github.event_name == 'release'
+      run: |
+        TAG="${{ steps.version.outputs.tag }}"
+        VERSION="${{ steps.version.outputs.version }}"
+        ARCH="${{ matrix.arch }}"
+        REPO="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+        
+        echo "Extracting release assets from base image..."
+        
+        # Pull the base image
+        docker pull ${REPO}:${ARCH}-base-${TAG}
+        
+        # Create a container from the base image
+        CONTAINER_ID=$(docker create ${REPO}:${ARCH}-base-${TAG})
+        
+        # Create assets directory
+        mkdir -p release-assets
+        
+        # Extract the PBS server bundle
+        # The file should be at /proxmox-backup-server-{something}.tgz based on your Dockerfile
+        echo "Looking for .tgz files in container..."
+        
+        # Try to find and extract the file
+        docker export ${CONTAINER_ID} | tar -t | grep "proxmox-backup-server.*\.tgz$" | while read -r file; do
+          echo "Found: $file"
+          docker cp ${CONTAINER_ID}:/${file} release-assets/proxmox-backup-server-${TAG}-${ARCH}.tgz && break
+        done
+        
+        # Clean up container
+        docker rm ${CONTAINER_ID}
+        
+        # Upload to GitHub Release if we found the asset
+        if [ -f release-assets/proxmox-backup-server-${TAG}-${ARCH}.tgz ]; then
+          echo "Uploading proxmox-backup-server-${TAG}-${ARCH}.tgz to release..."
+          gh release upload ${TAG} release-assets/proxmox-backup-server-${TAG}-${ARCH}.tgz --clobber
+        else
+          echo "Warning: No PBS server bundle found to upload"
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   create-manifest:
-    needs: [build-custom]
+    needs: [build-and-push]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+    
     steps:
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       with:
-        registry: ghcr.io
+        registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Define tag
+    - name: Determine tag
       id: version
       run: |
         if [[ "${{ github.event_name }}" == "release" ]]; then
           TAG="${{ github.event.release.tag_name }}"
-        elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_override }}" ]]; then
-          TAG="${{ inputs.tag_override }}"
-        elif [ -f VERSION ]; then
-          TAG="v$(cat VERSION)"
+        elif [[ -n "${{ inputs.tag_name }}" ]]; then
+          TAG="${{ inputs.tag_name }}"
         else
-          TAG="v$(date +%Y%m%d)-${{ github.run_number }}"
+          echo "Error: No tag specified"
+          exit 1
         fi
         
         echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
-    - name: Create and push multi-arch manifest
+    - name: Create and push multi-arch manifests
       run: |
         TAG="${{ steps.version.outputs.tag }}"
-        REPO="ghcr.io/${{ github.repository }}"
+        REPO="${{ env.REGISTRY }}/${{ github.repository }}"
+        
+        echo "Creating multi-arch manifest for ${TAG}..."
         
         # Create manifest for the specific version tag
         docker manifest rm ${REPO}:${TAG} 2>/dev/null || true
-        
-        docker manifest create --amend \
-          ${REPO}:${TAG} \
+        docker manifest create ${REPO}:${TAG} \
           ${REPO}:amd64-${TAG} \
           ${REPO}:arm64-${TAG}
         
-        docker manifest annotate \
-          ${REPO}:${TAG} \
+        docker manifest annotate ${REPO}:${TAG} \
           ${REPO}:amd64-${TAG} \
-          --arch amd64
+          --arch amd64 --os linux
         
-        docker manifest annotate \
-          ${REPO}:${TAG} \
+        docker manifest annotate ${REPO}:${TAG} \
           ${REPO}:arm64-${TAG} \
-          --arch arm64
+          --arch arm64 --os linux
         
         docker manifest push ${REPO}:${TAG}
         
-        # Also create/update 'latest' manifest
-        docker manifest rm ${REPO}:latest 2>/dev/null || true
+        # Create/update latest manifest
+        echo "Creating multi-arch manifest for latest..."
         
-        docker manifest create --amend \
-          ${REPO}:latest \
+        docker manifest rm ${REPO}:latest 2>/dev/null || true
+        docker manifest create ${REPO}:latest \
           ${REPO}:amd64-latest \
           ${REPO}:arm64-latest
         
-        docker manifest annotate \
-          ${REPO}:latest \
+        docker manifest annotate ${REPO}:latest \
           ${REPO}:amd64-latest \
-          --arch amd64
+          --arch amd64 --os linux
         
-        docker manifest annotate \
-          ${REPO}:latest \
+        docker manifest annotate ${REPO}:latest \
           ${REPO}:arm64-latest \
-          --arch arm64
+          --arch arm64 --os linux
         
         docker manifest push ${REPO}:latest
-
-    - name: Print image info
-      run: |
-        echo "✅ Docker images published to GHCR:"
-        echo "  Multi-arch: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}"
-        echo "  Multi-arch: ghcr.io/${{ github.repository }}:latest"
-        echo "  AMD64: ghcr.io/${{ github.repository }}:amd64-${{ steps.version.outputs.tag }}"
-        echo "  ARM64: ghcr.io/${{ github.repository }}:arm64-${{ steps.version.outputs.tag }}"
+        
+        echo "✅ Successfully created multi-arch manifests"
         echo ""
-        echo "📦 Pull commands:"
-        echo "  docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}"
-        echo "  docker pull ghcr.io/${{ github.repository }}:latest"
-
-  # Optional: Create release assets with pre-built binaries
-  create-release-assets:
-    needs: [build-custom]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    permissions:
-      contents: write
-      packages: read
-    
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Extract and upload release assets
-      run: |
-        TAG="${{ github.event.release.tag_name }}"
-        REPO="ghcr.io/${{ github.repository }}"
-        
-        # Create temporary directory for assets
-        mkdir -p release-assets
-        
-        # Extract server and client binaries from Docker images (if they exist)
-        for ARCH in amd64 arm64; do
-          echo "Extracting assets for ${ARCH}..."
-          
-          # Pull the image
-          docker pull ${REPO}:${ARCH}-${TAG}
-          
-          # Create container and extract files if they exist
-          CONTAINER_ID=$(docker create ${REPO}:${ARCH}-${TAG})
-          
-          # Try to extract server bundle if it exists
-          if docker cp ${CONTAINER_ID}:/proxmox-backup-server-${TAG}-${ARCH}.tgz release-assets/ 2>/dev/null; then
-            echo "Extracted server bundle for ${ARCH}"
-          fi
-          
-          # Try to extract client bundle if it exists
-          if docker cp ${CONTAINER_ID}:/proxmox-backup-client-${TAG}-${ARCH}.tgz release-assets/ 2>/dev/null; then
-            echo "Extracted client bundle for ${ARCH}"
-          fi
-          
-          docker rm ${CONTAINER_ID}
-        done
-        
-        # Upload assets to release if any were extracted
-        if ls release-assets/*.tgz 1> /dev/null 2>&1; then
-          for file in release-assets/*.tgz; do
-            echo "Uploading $(basename $file) to release..."
-            gh release upload ${TAG} "$file" --clobber
-          done
-        else
-          echo "No release assets found to upload"
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        echo "📦 Users can now pull:"
+        echo "  docker pull ${REPO}:${TAG}"
+        echo "  docker pull ${REPO}:latest"

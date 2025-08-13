@@ -1,5 +1,5 @@
-# Custom Dockerfile.build that doesn't modify the original
-# This file handles ARM64 builds properly without the xtr package issue
+# Custom Dockerfile that ensures .tgz files are properly accessible
+# Based on your existing Dockerfile.build.custom
 ARG IMAGE_PREFIX=
 FROM ${IMAGE_PREFIX}debian:trixie AS toolchain
 
@@ -25,10 +25,9 @@ RUN wget https://static.rust-lang.org/rustup/rustup-init.sh && \
   cargo install debcargo cargo-deb && \
   rustc --version
 
-# Handle xtr package - build it but handle installation gracefully
+# Handle xtr package
 ADD packages/ /src/packages/
 
-# Build xtr and install it (needed as dependency for proxmox-i18n)
 RUN cd /src/packages/xtr && \
     cargo build --release && \
     cargo deb --no-build --no-strip && \
@@ -36,19 +35,18 @@ RUN cd /src/packages/xtr && \
      (echo "dpkg install failed, installing binary directly" && \
       cp target/release/xtr /usr/local/bin/xtr && \
       chmod +x /usr/local/bin/xtr)) && \
-    # Make xtr available to the build system
     which xtr && \
     xtr --version || echo "xtr installed to /usr/local/bin/"
 
-# Specify default rust toolchain
 ENV RUSTUP_TOOLCHAIN=1.87
 
-# Link /cargo/bin to /usr/local/bin
 RUN ln -s /cargo/bin/* /usr/local/bin/
 ADD /scripts/toolchain/ /usr/local/bin/
 
 WORKDIR /src
 ADD dockerfiles/gitconfig /etc/gitconfig
+
+#=================================
 
 FROM toolchain as builder
 
@@ -73,25 +71,34 @@ RUN ./scripts/build/make.bash proxmox-backup --rust 1.85 make_deb
 
 FROM ${IMAGE_PREFIX}debian:trixie AS deb_env
 
-# Generate release package
+# Copy release packages
 COPY --from=builder /src/release/ /release/
 
-# Bundle server
+# Bundle server with proper naming
 ARG VERSION
 ARG ARCH=
 ARG TAG=
 ADD /scripts/release /src/scripts/release
+
+# Generate install script
 RUN /src/scripts/release/apt-install.bash --gen /release/install /release proxmox-backup-server
-RUN /src/scripts/release/bundle-tgz.bash /proxmox-backup-server-${TAG:-$VERSION}-${ARCH:-dev}.tgz /release/.
+
+# Create the .tgz bundle with a consistent name
+RUN /src/scripts/release/bundle-tgz.bash /tmp/proxmox-backup-server.tgz /release/. && \
+    # Copy with the proper name that includes version/tag info
+    cp /tmp/proxmox-backup-server.tgz /proxmox-backup-server-${TAG:-${VERSION:-latest}}-${ARCH:-$(dpkg --print-architecture)}.tgz
 
 #=================================
 
 FROM ${IMAGE_PREFIX}debian:trixie AS release_env
 
-# Copy packages
+# Copy packages from deb_env
 COPY --from=deb_env /release/ /release/
 
-# Install base packages
+# IMPORTANT: Copy the .tgz file(s) to root for extraction
+COPY --from=deb_env /proxmox-backup-server-*.tgz /
+
+# Install PBS
 RUN export DEBIAN_FRONTEND=noninteractive && \
   apt-get -y update && \
   apt install -y runit ssmtp cron && \
