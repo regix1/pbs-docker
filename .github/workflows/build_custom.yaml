@@ -1,42 +1,49 @@
-name: Release PBS Docker Images
+name: Build Custom PBS to GHCR
 
 on:
+  push:
+    branches:
+      - main
+  pull_request:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name for manual release (e.g., v4.0.13-1)'
+        description: 'Tag name for the image'
         required: false
-        default: ''
+        default: 'latest'
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
+  build-base:
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Use standard runner for AMD64
           - arch: amd64
             runner: ubuntu-latest
             platform: linux/amd64
+          # Use NATIVE ARM64 runner for ARM64 builds (FREE for public repos!)
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-24.04-arm  # Native ARM64 - NO QEMU needed!
             platform: linux/arm64
     
     runs-on: ${{ matrix.runner }}
     permissions:
-      contents: write
+      contents: read
       packages: write
     
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Set up QEMU (AMD64 only)
+    # Only set up QEMU for AMD64 (not needed for native ARM64)
+    - name: Set up QEMU
       if: matrix.arch == 'amd64'
       uses: docker/setup-qemu-action@v3
       with:
@@ -52,119 +59,87 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Determine version and tag
+    - name: Define version and tag
       id: version
       run: |
-        # Get tag from release event or workflow_dispatch input
+        # For releases, use the release tag
         if [[ "${{ github.event_name }}" == "release" ]]; then
           TAG="${{ github.event.release.tag_name }}"
-        elif [[ -n "${{ inputs.tag_name }}" ]]; then
-          TAG="${{ inputs.tag_name }}"
+          VERSION="${TAG#v}"
+        elif [ -f VERSION ]; then
+          VERSION=$(cat VERSION)
+          TAG="v${VERSION}"
         else
-          echo "Error: No tag specified"
-          exit 1
+          VERSION=$(date +%Y%m%d)-${{ github.run_number }}
+          TAG="v${VERSION}"
         fi
         
-        # Remove 'v' prefix for VERSION if present
-        VERSION="${TAG#v}"
+        # Override with manual input if provided
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_name }}" ]]; then
+          TAG="${{ inputs.tag_name }}"
+          VERSION="${TAG#v}"
+        elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          TAG="pr-${{ github.event.pull_request.number }}"
+        elif [[ "${{ github.ref }}" != "refs/heads/main" && "${{ github.event_name }}" != "release" ]]; then
+          TAG="dev"
+        fi
         
-        echo "tag=${TAG}" >> $GITHUB_OUTPUT
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
-        echo "Building: TAG=${TAG}, VERSION=${VERSION}, ARCH=${{ matrix.arch }}"
+        echo "tag=${TAG}" >> $GITHUB_OUTPUT
+        echo "Building version: ${VERSION}, tag: ${TAG}"
+        echo "Running on native $(uname -m) architecture"
 
-    # Build Stage 1: Base PBS image
-    - name: Build base PBS image
-      id: build-base
+    # Build the BASE PBS image using OUR CUSTOM Dockerfile
+    - name: Build base PBS from source (Custom)
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: dockerfiles/Dockerfile.build.custom
+        file: dockerfiles/Dockerfile.build.custom  # Use our custom build file!
         platforms: ${{ matrix.platform }}
         push: true
         tags: |
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ steps.version.outputs.tag }}
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ github.sha }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ steps.version.outputs.tag }}
         cache-from: type=gha,scope=base-${{ matrix.arch }}
         cache-to: type=gha,mode=max,scope=base-${{ matrix.arch }}
         build-args: |
           VERSION=${{ steps.version.outputs.version }}
           TAG=${{ steps.version.outputs.tag }}
-          ARCH=${{ matrix.arch }}
           IMAGE_PREFIX=${{ matrix.arch == 'arm64' && 'arm64v8/' || '' }}
           TARGETARCH=${{ matrix.arch }}
+          ARCH=${{ matrix.arch }}
 
-    # Build Stage 2: Custom layer with subscription removal
-    - name: Build custom PBS image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: dockerfiles/Dockerfile.custom
-        platforms: ${{ matrix.platform }}
-        push: true
-        tags: |
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-${{ steps.version.outputs.tag }}
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-latest
-        labels: |
-          org.opencontainers.image.title=Proxmox Backup Server
-          org.opencontainers.image.description=PBS with subscription nag removed
-          org.opencontainers.image.version=${{ steps.version.outputs.version }}
-        cache-from: type=gha,scope=custom-${{ matrix.arch }}
-        cache-to: type=gha,mode=max,scope=custom-${{ matrix.arch }}
-        build-args: |
-          BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ steps.version.outputs.tag }}
-        provenance: false
-
-    # Extract and upload release assets (the .tgz files)
-    - name: Extract release assets from base image
-      if: github.event_name == 'release'
-      run: |
-        TAG="${{ steps.version.outputs.tag }}"
-        VERSION="${{ steps.version.outputs.version }}"
-        ARCH="${{ matrix.arch }}"
-        REPO="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-        
-        echo "Extracting release assets from base image..."
-        
-        # Pull the base image
-        docker pull ${REPO}:${ARCH}-base-${TAG}
-        
-        # Create a container from the base image
-        CONTAINER_ID=$(docker create ${REPO}:${ARCH}-base-${TAG})
-        
-        # Create assets directory
-        mkdir -p release-assets
-        
-        # Extract the PBS server bundle
-        # The file should be at /proxmox-backup-server-{something}.tgz based on your Dockerfile
-        echo "Looking for .tgz files in container..."
-        
-        # Try to find and extract the file
-        docker export ${CONTAINER_ID} | tar -t | grep "proxmox-backup-server.*\.tgz$" | while read -r file; do
-          echo "Found: $file"
-          docker cp ${CONTAINER_ID}:/${file} release-assets/proxmox-backup-server-${TAG}-${ARCH}.tgz && break
-        done
-        
-        # Clean up container
-        docker rm ${CONTAINER_ID}
-        
-        # Upload to GitHub Release if we found the asset
-        if [ -f release-assets/proxmox-backup-server-${TAG}-${ARCH}.tgz ]; then
-          echo "Uploading proxmox-backup-server-${TAG}-${ARCH}.tgz to release..."
-          gh release upload ${TAG} release-assets/proxmox-backup-server-${TAG}-${ARCH}.tgz --clobber
-        else
-          echo "Warning: No PBS server bundle found to upload"
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  create-manifest:
-    needs: [build-and-push]
-    runs-on: ubuntu-latest
+  build-custom:
+    needs: build-base
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm  # Native ARM64!
+            platform: linux/arm64
+    
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
-    
+
     steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      if: matrix.arch == 'amd64'
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: linux/amd64
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       with:
@@ -172,63 +147,216 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Determine tag
+    - name: Define version and tag
       id: version
       run: |
         if [[ "${{ github.event_name }}" == "release" ]]; then
           TAG="${{ github.event.release.tag_name }}"
-        elif [[ -n "${{ inputs.tag_name }}" ]]; then
-          TAG="${{ inputs.tag_name }}"
+          VERSION="${TAG#v}"
+        elif [ -f VERSION ]; then
+          VERSION=$(cat VERSION)
+          TAG="v${VERSION}"
         else
-          echo "Error: No tag specified"
-          exit 1
+          VERSION=$(date +%Y%m%d)-${{ github.run_number }}
+          TAG="v${VERSION}"
         fi
         
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_name }}" ]]; then
+          TAG="${{ inputs.tag_name }}"
+          VERSION="${TAG#v}"
+        elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          TAG="pr-${{ github.event.pull_request.number }}"
+        elif [[ "${{ github.ref }}" != "refs/heads/main" && "${{ github.event_name }}" != "release" ]]; then
+          TAG="dev"
+        fi
+        
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
         echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
-    - name: Create and push multi-arch manifests
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=raw,value=${{ matrix.arch }}-${{ steps.version.outputs.tag }}
+          type=raw,value=${{ matrix.arch }}-latest,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'release' }}
+          type=sha,prefix=${{ matrix.arch }}-
+
+    # Apply the CUSTOM layer with subscription removal on top of base
+    - name: Build custom layer with no-nag
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: dockerfiles/Dockerfile.custom
+        platforms: ${{ matrix.platform }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha,scope=custom-${{ matrix.arch }}
+        cache-to: type=gha,mode=max,scope=custom-${{ matrix.arch }}
+        build-args: |
+          BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ github.sha }}
+        provenance: false  # Disable provenance to avoid manifest lists
+
+  create-manifest:
+    needs: [build-custom]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Define tag
+      id: version
       run: |
-        TAG="${{ steps.version.outputs.tag }}"
-        REPO="${{ env.REGISTRY }}/${{ github.repository }}"
+        if [[ "${{ github.event_name }}" == "release" ]]; then
+          TAG="${{ github.event.release.tag_name }}"
+        elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_name }}" ]]; then
+          TAG="${{ inputs.tag_name }}"
+        else
+          TAG="latest"
+        fi
+        echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+    - name: Create and push multi-arch manifest
+      run: |
+        # Remove any existing manifests first
+        docker manifest rm ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }} 2>/dev/null || true
         
-        echo "Creating multi-arch manifest for ${TAG}..."
+        # Create manifest for the specific tag with --amend flag
+        docker manifest create --amend \
+          ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }} \
+          ghcr.io/${{ github.repository }}:amd64-${{ steps.version.outputs.tag }} \
+          ghcr.io/${{ github.repository }}:arm64-${{ steps.version.outputs.tag }}
         
-        # Create manifest for the specific version tag
-        docker manifest rm ${REPO}:${TAG} 2>/dev/null || true
-        docker manifest create ${REPO}:${TAG} \
-          ${REPO}:amd64-${TAG} \
-          ${REPO}:arm64-${TAG}
+        docker manifest annotate \
+          ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }} \
+          ghcr.io/${{ github.repository }}:amd64-${{ steps.version.outputs.tag }} \
+          --arch amd64
         
-        docker manifest annotate ${REPO}:${TAG} \
-          ${REPO}:amd64-${TAG} \
-          --arch amd64 --os linux
+        docker manifest annotate \
+          ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }} \
+          ghcr.io/${{ github.repository }}:arm64-${{ steps.version.outputs.tag }} \
+          --arch arm64
         
-        docker manifest annotate ${REPO}:${TAG} \
-          ${REPO}:arm64-${TAG} \
-          --arch arm64 --os linux
+        docker manifest push ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}
         
-        docker manifest push ${REPO}:${TAG}
+        # Also create 'latest' manifest if this is main branch or release
+        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.event_name }}" == "release" ]]; then
+          # Remove existing latest manifest
+          docker manifest rm ghcr.io/${{ github.repository }}:latest 2>/dev/null || true
+          
+          docker manifest create --amend \
+            ghcr.io/${{ github.repository }}:latest \
+            ghcr.io/${{ github.repository }}:amd64-latest \
+            ghcr.io/${{ github.repository }}:arm64-latest
+          
+          docker manifest annotate \
+            ghcr.io/${{ github.repository }}:latest \
+            ghcr.io/${{ github.repository }}:amd64-latest \
+            --arch amd64
+          
+          docker manifest annotate \
+            ghcr.io/${{ github.repository }}:latest \
+            ghcr.io/${{ github.repository }}:arm64-latest \
+            --arch arm64
+          
+          docker manifest push ghcr.io/${{ github.repository }}:latest
+        fi
+
+    - name: Print image info
+      run: |
+        echo "✅ Image published to GHCR:"
+        echo "  Multi-arch: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}"
+        echo "  AMD64: ghcr.io/${{ github.repository }}:amd64-${{ steps.version.outputs.tag }}"
+        echo "  ARM64: ghcr.io/${{ github.repository }}:arm64-${{ steps.version.outputs.tag }}"
+        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.event_name }}" == "release" ]]; then
+          echo "  Latest: ghcr.io/${{ github.repository }}:latest"
+        fi
+
+  # Extract and upload release assets ONLY for releases
+  upload-release-assets:
+    needs: [build-base]
+    if: github.event_name == 'release'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+      packages: read
+    
+    steps:
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract and upload assets
+      run: |
+        TAG="${{ github.event.release.tag_name }}"
+        VERSION="${TAG#v}"
+        ARCH="${{ matrix.arch }}"
+        REPO="ghcr.io/${{ github.repository }}"
         
-        # Create/update latest manifest
-        echo "Creating multi-arch manifest for latest..."
+        echo "Extracting assets for ${ARCH} from base image..."
         
-        docker manifest rm ${REPO}:latest 2>/dev/null || true
-        docker manifest create ${REPO}:latest \
-          ${REPO}:amd64-latest \
-          ${REPO}:arm64-latest
+        # Pull the base image
+        docker pull ${REPO}:${ARCH}-base-${TAG}
         
-        docker manifest annotate ${REPO}:latest \
-          ${REPO}:amd64-latest \
-          --arch amd64 --os linux
+        # Create container
+        CONTAINER_ID=$(docker create ${REPO}:${ARCH}-base-${TAG})
         
-        docker manifest annotate ${REPO}:latest \
-          ${REPO}:arm64-latest \
-          --arch arm64 --os linux
+        # Try to extract the .tgz file - check multiple possible locations
+        echo "Looking for .tgz files..."
         
-        docker manifest push ${REPO}:latest
+        # First, let's see what .tgz files exist in the image
+        docker export ${CONTAINER_ID} | tar -t | grep "\.tgz$" | head -20
         
-        echo "✅ Successfully created multi-arch manifests"
-        echo ""
-        echo "📦 Users can now pull:"
-        echo "  docker pull ${REPO}:${TAG}"
-        echo "  docker pull ${REPO}:latest"
+        # Try to extract from root
+        if docker cp ${CONTAINER_ID}:/proxmox-backup-server-${TAG}-${ARCH}.tgz . 2>/dev/null; then
+          echo "✓ Found /proxmox-backup-server-${TAG}-${ARCH}.tgz"
+          ASSET_FILE="proxmox-backup-server-${TAG}-${ARCH}.tgz"
+        elif docker cp ${CONTAINER_ID}:/proxmox-backup-server-${VERSION}-${ARCH}.tgz . 2>/dev/null; then
+          echo "✓ Found /proxmox-backup-server-${VERSION}-${ARCH}.tgz"
+          mv proxmox-backup-server-${VERSION}-${ARCH}.tgz proxmox-backup-server-${TAG}-${ARCH}.tgz
+          ASSET_FILE="proxmox-backup-server-${TAG}-${ARCH}.tgz"
+        elif docker cp ${CONTAINER_ID}:/proxmox-backup-server-${TAG}-dev.tgz . 2>/dev/null; then
+          echo "✓ Found /proxmox-backup-server-${TAG}-dev.tgz"
+          mv proxmox-backup-server-${TAG}-dev.tgz proxmox-backup-server-${TAG}-${ARCH}.tgz
+          ASSET_FILE="proxmox-backup-server-${TAG}-${ARCH}.tgz"
+        else
+          echo "❌ No .tgz file found in expected locations"
+          ASSET_FILE=""
+        fi
+        
+        # Clean up container
+        docker rm ${CONTAINER_ID}
+        
+        # Upload to release if we found an asset
+        if [ -n "${ASSET_FILE}" ] && [ -f "${ASSET_FILE}" ]; then
+          echo "Uploading ${ASSET_FILE} to release..."
+          gh release upload ${TAG} "${ASSET_FILE}" --clobber
+          echo "✅ Successfully uploaded ${ASSET_FILE}"
+        else
+          echo "⚠️ No asset file to upload for ${ARCH}"
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
