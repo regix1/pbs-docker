@@ -179,6 +179,7 @@ jobs:
         cache-to: type=gha,mode=max,scope=custom-${{ matrix.arch }}
         build-args: |
           BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ github.sha }}
+        provenance: false  # Disable provenance to avoid manifest lists
 
   create-manifest:
     needs: [build-custom]
@@ -208,8 +209,11 @@ jobs:
 
     - name: Create and push multi-arch manifest
       run: |
-        # Create manifest for the specific tag
-        docker manifest create \
+        # Remove any existing manifests first
+        docker manifest rm ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }} 2>/dev/null || true
+        
+        # Create manifest for the specific tag with --amend flag
+        docker manifest create --amend \
           ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }} \
           ghcr.io/${{ github.repository }}:amd64-${{ steps.version.outputs.tag }} \
           ghcr.io/${{ github.repository }}:arm64-${{ steps.version.outputs.tag }}
@@ -228,7 +232,10 @@ jobs:
         
         # Also create 'latest' manifest if this is main branch
         if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-          docker manifest create \
+          # Remove existing latest manifest
+          docker manifest rm ghcr.io/${{ github.repository }}:latest 2>/dev/null || true
+          
+          docker manifest create --amend \
             ghcr.io/${{ github.repository }}:latest \
             ghcr.io/${{ github.repository }}:amd64-latest \
             ghcr.io/${{ github.repository }}:arm64-latest
