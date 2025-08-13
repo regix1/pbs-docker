@@ -1,10 +1,6 @@
 name: Build Custom PBS to GHCR
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
   release:
     types: [published]
   workflow_dispatch:
@@ -66,22 +62,15 @@ jobs:
         if [[ "${{ github.event_name }}" == "release" ]]; then
           TAG="${{ github.event.release.tag_name }}"
           VERSION="${TAG#v}"
+        elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_name }}" ]]; then
+          TAG="${{ inputs.tag_name }}"
+          VERSION="${TAG#v}"
         elif [ -f VERSION ]; then
           VERSION=$(cat VERSION)
           TAG="v${VERSION}"
         else
           VERSION=$(date +%Y%m%d)-${{ github.run_number }}
           TAG="v${VERSION}"
-        fi
-        
-        # Override with manual input if provided
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_name }}" ]]; then
-          TAG="${{ inputs.tag_name }}"
-          VERSION="${TAG#v}"
-        elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-          TAG="pr-${{ github.event.pull_request.number }}"
-        elif [[ "${{ github.ref }}" != "refs/heads/main" && "${{ github.event_name }}" != "release" ]]; then
-          TAG="dev"
         fi
         
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
@@ -153,21 +142,15 @@ jobs:
         if [[ "${{ github.event_name }}" == "release" ]]; then
           TAG="${{ github.event.release.tag_name }}"
           VERSION="${TAG#v}"
+        elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_name }}" ]]; then
+          TAG="${{ inputs.tag_name }}"
+          VERSION="${TAG#v}"
         elif [ -f VERSION ]; then
           VERSION=$(cat VERSION)
           TAG="v${VERSION}"
         else
           VERSION=$(date +%Y%m%d)-${{ github.run_number }}
           TAG="v${VERSION}"
-        fi
-        
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag_name }}" ]]; then
-          TAG="${{ inputs.tag_name }}"
-          VERSION="${TAG#v}"
-        elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-          TAG="pr-${{ github.event.pull_request.number }}"
-        elif [[ "${{ github.ref }}" != "refs/heads/main" && "${{ github.event_name }}" != "release" ]]; then
-          TAG="dev"
         fi
         
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
@@ -180,7 +163,7 @@ jobs:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
           type=raw,value=${{ matrix.arch }}-${{ steps.version.outputs.tag }}
-          type=raw,value=${{ matrix.arch }}-latest,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'release' }}
+          type=raw,value=${{ matrix.arch }}-latest
           type=sha,prefix=${{ matrix.arch }}-
 
     # Apply the CUSTOM layer with subscription removal on top of base
@@ -202,7 +185,6 @@ jobs:
   create-manifest:
     needs: [build-custom]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event_name == 'release'
     permissions:
       contents: read
       packages: write
@@ -250,28 +232,26 @@ jobs:
         
         docker manifest push ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}
         
-        # Also create 'latest' manifest if this is main branch or release
-        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.event_name }}" == "release" ]]; then
-          # Remove existing latest manifest
-          docker manifest rm ghcr.io/${{ github.repository }}:latest 2>/dev/null || true
-          
-          docker manifest create --amend \
-            ghcr.io/${{ github.repository }}:latest \
-            ghcr.io/${{ github.repository }}:amd64-latest \
-            ghcr.io/${{ github.repository }}:arm64-latest
-          
-          docker manifest annotate \
-            ghcr.io/${{ github.repository }}:latest \
-            ghcr.io/${{ github.repository }}:amd64-latest \
-            --arch amd64
-          
-          docker manifest annotate \
-            ghcr.io/${{ github.repository }}:latest \
-            ghcr.io/${{ github.repository }}:arm64-latest \
-            --arch arm64
-          
-          docker manifest push ghcr.io/${{ github.repository }}:latest
-        fi
+        # Also create 'latest' manifest
+        # Remove existing latest manifest
+        docker manifest rm ghcr.io/${{ github.repository }}:latest 2>/dev/null || true
+        
+        docker manifest create --amend \
+          ghcr.io/${{ github.repository }}:latest \
+          ghcr.io/${{ github.repository }}:amd64-latest \
+          ghcr.io/${{ github.repository }}:arm64-latest
+        
+        docker manifest annotate \
+          ghcr.io/${{ github.repository }}:latest \
+          ghcr.io/${{ github.repository }}:amd64-latest \
+          --arch amd64
+        
+        docker manifest annotate \
+          ghcr.io/${{ github.repository }}:latest \
+          ghcr.io/${{ github.repository }}:arm64-latest \
+          --arch arm64
+        
+        docker manifest push ghcr.io/${{ github.repository }}:latest
 
     - name: Print image info
       run: |
@@ -279,9 +259,7 @@ jobs:
         echo "  Multi-arch: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}"
         echo "  AMD64: ghcr.io/${{ github.repository }}:amd64-${{ steps.version.outputs.tag }}"
         echo "  ARM64: ghcr.io/${{ github.repository }}:arm64-${{ steps.version.outputs.tag }}"
-        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.event_name }}" == "release" ]]; then
-          echo "  Latest: ghcr.io/${{ github.repository }}:latest"
-        fi
+        echo "  Latest: ghcr.io/${{ github.repository }}:latest"
 
   # Extract and upload release assets ONLY for releases
   upload-release-assets:
