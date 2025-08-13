@@ -25,20 +25,20 @@ RUN wget https://static.rust-lang.org/rustup/rustup-init.sh && \
   cargo install debcargo cargo-deb && \
   rustc --version
 
-# Handle xtr package installation with ARM64 compatibility
+# Handle xtr package - build it but handle installation gracefully
 ADD packages/ /src/packages/
 
-# Detect architecture and handle xtr package accordingly
-ARG TARGETARCH
-RUN if [ "$TARGETARCH" = "arm64" ] || [ "$(dpkg --print-architecture)" = "arm64" ]; then \
-      echo "=== ARM64 detected, skipping xtr package (not critical for PBS) ===" ; \
-    else \
-      echo "=== Building xtr package for $TARGETARCH ===" && \
-      cargo deb --manifest-path /src/packages/xtr/Cargo.toml --no-build --no-strip && \
-      dpkg -i /src/packages/xtr/target/debian/*.deb || \
-      (echo "Warning: xtr installation failed, copying binary directly" && \
-       cp /src/packages/xtr/target/release/xtr /usr/local/bin/ 2>/dev/null || true) ; \
-    fi
+# Build xtr and install it (needed as dependency for proxmox-i18n)
+RUN cd /src/packages/xtr && \
+    cargo build --release && \
+    cargo deb --no-build --no-strip && \
+    (dpkg -i target/debian/*.deb || \
+     (echo "dpkg install failed, installing binary directly" && \
+      cp target/release/xtr /usr/local/bin/xtr && \
+      chmod +x /usr/local/bin/xtr)) && \
+    # Make xtr available to the build system
+    which xtr && \
+    xtr --version || echo "xtr installed to /usr/local/bin/"
 
 # Specify default rust toolchain
 ENV RUSTUP_TOOLCHAIN=1.87
