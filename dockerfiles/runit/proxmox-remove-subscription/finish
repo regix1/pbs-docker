@@ -1,0 +1,13 @@
+#!/bin/sh
+# This is the 'finish' script for the proxmox-remove-subscription service
+# Place this in: dockerfiles/runit/proxmox-remove-subscription/finish
+
+# Don't restart the service if it exits successfully (exit code 0)
+if [ "$1" = "0" ]; then
+    # Service completed successfully, don't restart
+    sv down proxmox-remove-subscription
+    exit 0
+fi
+
+# For any other exit code, let runit decide based on its normal rules
+exit 0

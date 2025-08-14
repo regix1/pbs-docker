@@ -1,89 +1,42 @@
-#!/bin/bash
+#!/bin/sh
+exec 2>&1
 
-echo "[proxmox-remove-subscription] Starting service..."
+SERVICE_NAME="proxmox-remove-subscription"
+MARKER_FILE="/var/lib/proxmox-backup/.subscription-nag-disabled"
 
-# Wait for PBS API to be ready
-echo "[proxmox-remove-subscription] Waiting for PBS API to start..."
-for i in {1..30}; do
+echo "[$SERVICE_NAME] Starting service..."
+
+# Check if already completed
+if [ -f "$MARKER_FILE" ]; then
+    echo "[$SERVICE_NAME] Subscription nag already removed, exiting..."
+    # Exit cleanly instead of sleeping forever
+    exit 0
+fi
+
+# Wait for PBS API to be ready (max 30 seconds)
+echo "[$SERVICE_NAME] Waiting for PBS API to start..."
+for i in $(seq 1 30); do
     if curl -k -s https://localhost:8007/ > /dev/null 2>&1; then
-        echo "[proxmox-remove-subscription] PBS API is ready"
+        echo "[$SERVICE_NAME] PBS API is ready"
         break
     fi
-    sleep 2
+    sleep 1
 done
 
 # Run the post-install script
-if [ -f /etc/proxmox-backup-default/pbs-post-install.sh ]; then
-    echo "[proxmox-remove-subscription] Running PBS post-install configuration..."
-    bash /etc/proxmox-backup-default/pbs-post-install.sh
-    echo "[proxmox-remove-subscription] Post-install script completed"
+POST_INSTALL_SCRIPT="/etc/proxmox-backup-default/pbs-post-install.sh"
+if [ -f "$POST_INSTALL_SCRIPT" ]; then
+    echo "[$SERVICE_NAME] Running PBS post-install configuration..."
+    if sh "$POST_INSTALL_SCRIPT"; then
+        echo "[$SERVICE_NAME] Post-install script completed successfully"
+        touch "$MARKER_FILE"
+    else
+        echo "[$SERVICE_NAME] WARNING: Post-install script failed with exit code $?"
+    fi
+else
+    echo "[$SERVICE_NAME] Post-install script not found"
 fi
 
-# Additional runtime patching for newer PBS versions
-echo "[proxmox-remove-subscription] Applying runtime patches..."
-
-# Method 1: Patch JavaScript files on every startup
-for file in /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js \
-            /usr/share/pbs-www/*.js \
-            /usr/share/javascript/proxmox-backup/*.js; do
-    if [ -f "$file" ]; then
-        # Remove subscription checks
-        sed -i 's/No valid subscription/Subscription OK/g' "$file" 2>/dev/null || true
-        sed -i "/data\.status/s/\!//g" "$file" 2>/dev/null || true
-        sed -i "s/'active'/true/g" "$file" 2>/dev/null || true
-        sed -i "s/res === null || res === undefined || \!res/true/g" "$file" 2>/dev/null || true
-        sed -i "s/res\.data\.status\.toLowerCase() !== 'active'/false/g" "$file" 2>/dev/null || true
-    fi
-done
-
-# Method 2: Override subscription API endpoint
-if [ -d /usr/share/pbs-www ]; then
-    # Create a custom JS injection to override subscription checks
-    cat > /usr/share/pbs-www/subscription-override.js << 'EOF'
-// Override subscription check
-if (window.Proxmox && window.Proxmox.Utils) {
-    Proxmox.Utils.checked_command = function(orig_cmd) {
-        Proxmox.Utils.API2Request({
-            url: orig_cmd.url,
-            method: orig_cmd.method || 'POST',
-            params: orig_cmd.params,
-            failure: orig_cmd.failure,
-            success: orig_cmd.success || Ext.emptyFn
-        });
-    };
-}
-
-// Override subscription status
-if (window.PBS && window.PBS.Utils) {
-    PBS.Utils.subscription_check = function() {
-        return { status: 'active' };
-    };
-}
-EOF
-    
-    # Try to inject it into index.html if it exists
-    if [ -f /usr/share/pbs-www/index.html ] && ! grep -q "subscription-override.js" /usr/share/pbs-www/index.html; then
-        sed -i 's|</head>|<script src="/subscription-override.js"></script></head>|' /usr/share/pbs-www/index.html 2>/dev/null || true
-    fi
-fi
-
-# Method 3: Create fake subscription status file
-mkdir -p /etc/proxmox-backup
-cat > /etc/proxmox-backup/.subscription << EOF
-{
-    "status": "active",
-    "checktime": $(date +%s),
-    "key": "pbs-no-subscription",
-    "validdirectory": "/etc/proxmox-backup",
-    "productname": "Proxmox Backup Server"
-}
-EOF
-
-# Set proper permissions
-chmod 644 /etc/proxmox-backup/.subscription 2>/dev/null || true
-
-echo "[proxmox-remove-subscription] Runtime patches applied"
-
-# Keep the service running
-echo "[proxmox-remove-subscription] Service initialized, entering sleep mode..."
-exec sleep infinity
+echo "[$SERVICE_NAME] Service complete"
+# Exit cleanly - runit will handle the service lifecycle
+exit 0
