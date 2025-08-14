@@ -9,10 +9,12 @@ RUN chmod +x /etc/proxmox-backup-default/pbs-post-install.sh
 
 # Add the runit service for subscription removal
 COPY dockerfiles/runit/proxmox-remove-subscription /runit/proxmox-remove-subscription
-RUN chmod +x /runit/proxmox-remove-subscription/run
+RUN chmod +x /runit/proxmox-remove-subscription/run && \
+    chmod +x /runit/proxmox-remove-subscription/finish
 
-# Ensure all runit services are executable
-RUN find /runit -name "run" -type f -exec chmod +x {} \;
+# Ensure all runit services are executable (including finish scripts)
+RUN find /runit -name "run" -type f -exec chmod +x {} \; && \
+    find /runit -name "finish" -type f -exec chmod +x {} \;
 
 # Set environment variable defaults for subscription removal
 ENV PBS_ENTERPRISE=yes \
