@@ -38,7 +38,7 @@ All images are available on GitHub Container Registry:
 | Tag | Description | Architectures |
 |-----|-------------|---------------|
 | `latest` | Latest stable release | `amd64`, `arm64` |
-| `v4.0.13-1` | Specific version | `amd64`, `arm64` |
+| ![GitHub Release](https://img.shields.io/github/v/release/regix1/pbs-docker?style=flat-square&label=%20) | Latest version | `amd64`, `arm64` |
 | `amd64-latest` | AMD64 only | `amd64` |
 | `arm64-latest` | ARM64 only | `arm64` |
 
