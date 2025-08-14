@@ -3,7 +3,7 @@
 <div align="center">
 
 [![GitHub Release](https://img.shields.io/github/v/release/regix1/pbs-docker?style=for-the-badge&logo=github)](https://github.com/regix1/pbs-docker/releases)
-[![Docker Pulls](https://img.shields.io/docker/pulls/regix1/pbs-docker?style=for-the-badge&logo=docker)](https://ghcr.io/regix1/pbs-docker)
+[![GitHub Stars](https://img.shields.io/github/stars/regix1/pbs-docker?style=for-the-badge&logo=github)](https://github.com/regix1/pbs-docker)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=for-the-badge)](LICENSE)
 
 **Unofficial Proxmox Backup Server** • **Multi-Architecture** • **No Subscription Nag**
