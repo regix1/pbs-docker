@@ -13,7 +13,7 @@ echo "  DISABLE_SUBSCRIPTION_NAG=${DISABLE_SUBSCRIPTION_NAG}"
 
 VERSION="$(awk -F'=' '/^VERSION_CODENAME=/{ print $NF }' /etc/os-release)"
 
-# ALWAYS ensure subscription file exists to prevent base64 error
+# ALWAYS ensure subscription file exists with CORRECT permissions
 echo "Ensuring subscription file exists..."
 mkdir -p /etc/proxmox-backup
 if [ ! -f /etc/proxmox-backup/subscription ]; then
@@ -29,9 +29,12 @@ if [ ! -f /etc/proxmox-backup/subscription ]; then
     "nextduedate": "2099-12-31"
 }
 EOF
-    chmod 600 /etc/proxmox-backup/subscription
     echo "Created subscription file"
 fi
+# Always fix permissions in case they're wrong
+chown backup:backup /etc/proxmox-backup/subscription
+chmod 644 /etc/proxmox-backup/subscription
+echo "Fixed subscription file permissions"
 
 # Configure repositories
 if [ "${PBS_ENTERPRISE}" = "no" ] || [ "${PBS_ENTERPRISE}" = "false" ]; then
@@ -91,7 +94,7 @@ if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" 
     mkdir -p /etc/apt/apt.conf.d
     cat > /etc/apt/apt.conf.d/99-no-subscription-nag << 'EOF'
 DPkg::Post-Invoke {
-    "if [ ! -f /etc/proxmox-backup/subscription ]; then mkdir -p /etc/proxmox-backup && echo '{\"status\":\"active\",\"serverid\":\"00000000000000000000000000000000\",\"checktime\":\"1735689600\",\"key\":\"pbs-no-subscription\",\"validuntil\":\"2099-12-31\",\"productname\":\"Proxmox Backup Server\",\"regdate\":\"2025-01-01 00:00:00\",\"nextduedate\":\"2099-12-31\"}' > /etc/proxmox-backup/subscription && chmod 600 /etc/proxmox-backup/subscription; fi";
+    "if [ ! -f /etc/proxmox-backup/subscription ]; then mkdir -p /etc/proxmox-backup && echo '{\"status\":\"active\",\"serverid\":\"00000000000000000000000000000000\",\"checktime\":\"1735689600\",\"key\":\"pbs-no-subscription\",\"validuntil\":\"2099-12-31\",\"productname\":\"Proxmox Backup Server\",\"regdate\":\"2025-01-01 00:00:00\",\"nextduedate\":\"2099-12-31\"}' > /etc/proxmox-backup/subscription && chown backup:backup /etc/proxmox-backup/subscription && chmod 644 /etc/proxmox-backup/subscription; fi";
     "if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ] && ! grep -q 'NoMoreNagging' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; then sed -i '/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; fi";
 };
 EOF
