@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+# Don't use set -e because arithmetic operations can return non-zero
 
 # Environment variables with defaults
 PBS_ENTERPRISE=${PBS_ENTERPRISE:-"no"}
@@ -52,42 +52,40 @@ if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" 
         # Count changes for verification
         CHANGES=0
         
-        # Pattern 1: Fix the actual subscription check (line 615/20604 pattern)
-        # Change: res.data.status.toLowerCase() !== 'active'
-        # To: res.data.status.toLowerCase() === 'NoMoreNagging'
+        # Pattern 1: Fix the actual subscription check
         if grep -q "res\.data\.status\.toLowerCase() !== 'active'" "$PROXMOXLIB"; then
             sed -i "s/res\.data\.status\.toLowerCase() !== 'active'/res.data.status.toLowerCase() === 'NoMoreNagging'/g" "$PROXMOXLIB"
             echo "✓ Patched subscription status check"
-            ((CHANGES++))
+            CHANGES=$((CHANGES + 1))
         fi
         
         # Pattern 2: Change the "No valid subscription" message
         if grep -q "No valid subscription" "$PROXMOXLIB"; then
             sed -i "s/No valid subscription/Subscription OK/g" "$PROXMOXLIB"
             echo "✓ Patched subscription message"
-            ((CHANGES++))
+            CHANGES=$((CHANGES + 1))
         fi
         
         # Pattern 3: Alternative check pattern (some versions)
         if grep -q "data\.status !== 'active'" "$PROXMOXLIB"; then
             sed -i "s/data\.status !== 'active'/data.status === 'NoMoreNagging'/g" "$PROXMOXLIB"
             echo "✓ Patched alternative status check"
-            ((CHANGES++))
+            CHANGES=$((CHANGES + 1))
         fi
         
-        # Pattern 4: Another variant
-        if grep -q "data\.status\.toLowerCase() !== \"active\"" "$PROXMOXLIB"; then
-            sed -i "s/data\.status\.toLowerCase() !== \"active\"/data.status.toLowerCase() === \"NoMoreNagging\"/g" "$PROXMOXLIB"
+        # Pattern 4: Another variant with double quotes
+        if grep -q 'data\.status\.toLowerCase() !== "active"' "$PROXMOXLIB"; then
+            sed -i 's/data\.status\.toLowerCase() !== "active"/data.status.toLowerCase() === "NoMoreNagging"/g' "$PROXMOXLIB"
             echo "✓ Patched double-quote variant"
-            ((CHANGES++))
+            CHANGES=$((CHANGES + 1))
         fi
         
         # Pattern 5: Handle the Ext.Msg.show popup
         if grep -q "Ext\.Msg\.show" "$PROXMOXLIB"; then
             # Comment out the popup but preserve the line
-            sed -i "s/^\(\s*\)Ext\.Msg\.show/\1\/\/Ext.Msg.show/g" "$PROXMOXLIB"
+            sed -i 's/^\(\s*\)Ext\.Msg\.show/\1\/\/Ext.Msg.show/g' "$PROXMOXLIB"
             echo "✓ Disabled popup messages"
-            ((CHANGES++))
+            CHANGES=$((CHANGES + 1))
         fi
         
         # Verification
@@ -107,12 +105,33 @@ if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" 
         
         # Show what we changed
         echo ""
-        echo "Changed patterns:"
-        grep -n "NoMoreNagging\|Subscription OK" "$PROXMOXLIB" | head -5 || true
+        echo "Changed patterns (first 5 matches):"
+        grep -n "NoMoreNagging\|Subscription OK" "$PROXMOXLIB" 2>/dev/null | head -5 || echo "No patterns found"
         
     else
-        echo "Warning: proxmoxlib.js not found"
+        echo "ERROR: proxmoxlib.js not found at $PROXMOXLIB"
+        exit 1
     fi
+    
+    # Also patch PBS-specific files
+    echo ""
+    echo "Checking for PBS-specific GUI files..."
+    for dir in /usr/share/pbs-www /usr/share/javascript/proxmox-backup; do
+        if [ -d "$dir" ]; then
+            for file in "$dir"/*.js; do
+                if [ -f "$file" ]; then
+                    if grep -q "No valid subscription\|data\.status.*active" "$file" 2>/dev/null; then
+                        echo "Patching $(basename $file)..."
+                        sed -i \
+                            -e "s/No valid subscription/Subscription OK/g" \
+                            -e "s/\.toLowerCase() !== 'active'/=== 'NoMoreNagging'/g" \
+                            -e "s/data\.status !== 'active'/data.status === 'NoMoreNagging'/g" \
+                            "$file" 2>/dev/null || true
+                    fi
+                fi
+            done
+        fi
+    done
     
     # Create apt hook to maintain patches after updates
     mkdir -p /etc/apt/apt.conf.d
@@ -121,18 +140,27 @@ DPkg::Post-Invoke {
     "if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ]; then \
         sed -i \"s/res\.data\.status\.toLowerCase() !== 'active'/res.data.status.toLowerCase() === 'NoMoreNagging'/g\" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; \
         sed -i 's/No valid subscription/Subscription OK/g' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; \
+        sed -i 's/data\.status !== .active./data.status === .NoMoreNagging./g' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; \
     fi";
 };
 EOF
     
     # Create marker file
+    mkdir -p /var/lib/proxmox-backup
     touch /var/lib/proxmox-backup/.subscription-nag-disabled
+    echo "Created marker file"
 fi
 
-# Restart PBS proxy if it's running (in container, use pkill)
+# Try to signal PBS proxy to reload (don't fail if it doesn't work)
+echo ""
 echo "Signaling PBS proxy to reload..."
-pkill -HUP -f proxmox-backup-proxy 2>/dev/null || true
+if pkill -HUP -f proxmox-backup-proxy 2>/dev/null; then
+    echo "PBS proxy signaled successfully"
+else
+    echo "Could not signal PBS proxy (may not be running yet)"
+fi
 
-echo "PBS post-install configuration completed successfully"
+echo ""
+echo "PBS post-install configuration completed successfully!"
 echo "NOTE: Clear your browser cache (Ctrl+F5) to see changes!"
 exit 0
