@@ -13,12 +13,10 @@ echo "  DISABLE_SUBSCRIPTION_NAG=${DISABLE_SUBSCRIPTION_NAG}"
 
 VERSION="$(awk -F'=' '/^VERSION_CODENAME=/{ print $NF }' /etc/os-release)"
 
-# DO NOT create subscription file - PBS handles missing file better
-# Just ensure the directory exists
-mkdir -p /etc/proxmox-backup
-
-# Remove any existing subscription file
+# CRITICAL: Remove subscription file - PBS handles missing file better
+echo "Removing subscription file to prevent base64 errors..."
 rm -f /etc/proxmox-backup/subscription
+mkdir -p /etc/proxmox-backup
 
 # Configure repositories
 if [ "${PBS_ENTERPRISE}" = "no" ] || [ "${PBS_ENTERPRISE}" = "false" ]; then
@@ -53,31 +51,26 @@ if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" 
             cp "$PROXMOXLIB" "${PROXMOXLIB}.original"
         fi
         
-        # Apply patches
-        if ! grep -q "NoMoreNagging" "$PROXMOXLIB" 2>/dev/null; then
-            echo "Applying subscription nag patch..."
-            
-            sed -i.bak \
-                -e "/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}" \
-                -e "s/res === null || res === undefined || \!res || res\.data\.status\.toLowerCase() !== 'active'/false/" \
-                -e "s/could not read subscription status/subscription OK/g" \
-                -e "s/error decoding base64 data/subscription active/g" \
-                "$PROXMOXLIB" 2>/dev/null || true
-            
-            echo "Patch applied"
-        else
-            echo "Already patched"
-        fi
+        echo "Applying comprehensive subscription patches..."
+        
+        # Apply ALL working patches (same as the test script that worked)
+        sed -i '/data\.status/{s/\!//;s/active/NoMoreNagging/}' "$PROXMOXLIB"
+        sed -i "s/Ext.Msg.show({/void({ \/\//g" "$PROXMOXLIB"
+        sed -i 's/No valid subscription/Subscription OK/g' "$PROXMOXLIB"
+        sed -i 's/could not read subscription status//g' "$PROXMOXLIB"
+        sed -i 's/error decoding base64 data//g' "$PROXMOXLIB"
+        
+        echo "All patches applied!"
     else
         echo "Warning: proxmoxlib.js not found"
     fi
     
-    # Create apt hook to maintain patch after updates
+    # Create apt hook to maintain patches after updates
     mkdir -p /etc/apt/apt.conf.d
     cat > /etc/apt/apt.conf.d/99-no-subscription-nag << 'EOF'
 DPkg::Post-Invoke {
     "rm -f /etc/proxmox-backup/subscription 2>/dev/null || true";
-    "if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ] && ! grep -q 'NoMoreNagging' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; then sed -i -e '/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}' -e 's/could not read subscription status/subscription OK/g' -e 's/error decoding base64 data/subscription active/g' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; fi";
+    "if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ]; then sed -i -e '/data\.status/{s/\!//;s/active/NoMoreNagging/}' -e 's/No valid subscription/Subscription OK/g' -e 's/could not read subscription status//g' -e 's/error decoding base64 data//g' -e 's/Ext.Msg.show({/void({ \/\//g' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; fi";
 };
 EOF
     

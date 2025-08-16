@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runit service that removes subscription checks and errors
+# Simplified runit service - main work done in post-install
 exec 2>&1
 
 SERVICE_NAME="proxmox-remove-subscription"
@@ -7,62 +7,51 @@ MARKER_FILE="/var/lib/proxmox-backup/.subscription-nag-disabled"
 
 echo "[$SERVICE_NAME] Starting subscription removal service..."
 
-# Remove subscription file - PBS handles missing file better than invalid one
-echo "[$SERVICE_NAME] Removing subscription file..."
+# Always remove subscription file to prevent base64 errors
 rm -f /etc/proxmox-backup/subscription
 
-# Wait for PBS API to be ready
-echo "[$SERVICE_NAME] Waiting for PBS API to start..."
-for i in $(seq 1 60); do
-    if curl -k -s https://localhost:8007/ > /dev/null 2>&1; then
-        echo "[$SERVICE_NAME] PBS API is ready"
-        break
-    fi
-    sleep 1
-done
-
-# Patch the JavaScript to hide any subscription errors
-echo "[$SERVICE_NAME] Patching JavaScript files..."
-PROXMOXLIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
-
-if [ -f "$PROXMOXLIB" ]; then
-    # Create backup
-    if [ ! -f "${PROXMOXLIB}.original" ]; then
-        cp "$PROXMOXLIB" "${PROXMOXLIB}.original"
-    fi
+# Check if post-install already ran
+if [ -f "$MARKER_FILE" ]; then
+    echo "[$SERVICE_NAME] Post-install already completed patches"
+else
+    # Wait for PBS API to be ready
+    echo "[$SERVICE_NAME] Waiting for PBS API to start..."
+    for i in $(seq 1 60); do
+        if curl -k -s https://localhost:8007/ > /dev/null 2>&1; then
+            echo "[$SERVICE_NAME] PBS API is ready"
+            break
+        fi
+        sleep 1
+    done
     
-    # Apply patches to remove subscription nag and errors
-    sed -i \
-        -e "/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}" \
-        -e "s/res === null || res === undefined || \!res || res\.data\.status\.toLowerCase() !== 'active'/false/" \
-        -e "s/could not read subscription status/subscription check disabled/g" \
-        -e "s/error decoding base64 data/subscription not required/g" \
-        "$PROXMOXLIB" 2>/dev/null || true
-    
-    echo "[$SERVICE_NAME] JavaScript patched"
+    # Run the post-install script
+    POST_INSTALL_SCRIPT="/etc/proxmox-backup-default/pbs-post-install.sh"
+    if [ -f "$POST_INSTALL_SCRIPT" ]; then
+        echo "[$SERVICE_NAME] Running PBS post-install configuration..."
+        if bash "$POST_INSTALL_SCRIPT"; then
+            echo "[$SERVICE_NAME] Post-install completed successfully"
+        else
+            echo "[$SERVICE_NAME] Post-install failed with exit code $?"
+        fi
+    fi
 fi
 
-# DO NOT send HUP signal - it's causing the proxy to crash
-# The patches will take effect when users refresh their browsers
+echo "[$SERVICE_NAME] Service running - monitoring for changes..."
 
-touch "$MARKER_FILE"
-echo "[$SERVICE_NAME] Subscription removal complete"
-echo "[$SERVICE_NAME] Users need to clear browser cache (Ctrl+F5) to see changes"
-
-# Keep service running and check periodically for updates
+# Keep service running and monitor
 while true; do
+    # Remove subscription file every hour (in case something recreates it)
     sleep 3600
-    # Re-apply patches if needed after updates
-    if [ -f "$PROXMOXLIB" ] && ! grep -q "NoMoreNagging" "$PROXMOXLIB" 2>/dev/null; then
-        echo "[$SERVICE_NAME] Re-applying patches after update..."
-        sed -i \
-            -e "/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}" \
-            -e "s/could not read subscription status/subscription check disabled/g" \
-            -e "s/error decoding base64 data/subscription not required/g" \
-            "$PROXMOXLIB" 2>/dev/null || true
-        # DO NOT send HUP signal here either
-        echo "[$SERVICE_NAME] Patches re-applied - users need to refresh browsers"
-    fi
-    # Also ensure subscription file stays removed
     rm -f /etc/proxmox-backup/subscription 2>/dev/null || true
+    
+    # Check if patches are still applied
+    PROXMOXLIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
+    if [ -f "$PROXMOXLIB" ]; then
+        if ! grep -q "NoMoreNagging" "$PROXMOXLIB" 2>/dev/null; then
+            echo "[$SERVICE_NAME] Patches lost, running post-install again..."
+            if [ -f "/etc/proxmox-backup-default/pbs-post-install.sh" ]; then
+                bash "/etc/proxmox-backup-default/pbs-post-install.sh"
+            fi
+        fi
+    fi
 done
