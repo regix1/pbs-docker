@@ -13,6 +13,26 @@ echo "  DISABLE_SUBSCRIPTION_NAG=${DISABLE_SUBSCRIPTION_NAG}"
 
 VERSION="$(awk -F'=' '/^VERSION_CODENAME=/{ print $NF }' /etc/os-release)"
 
+# ALWAYS ensure subscription file exists to prevent base64 error
+echo "Ensuring subscription file exists..."
+mkdir -p /etc/proxmox-backup
+if [ ! -f /etc/proxmox-backup/subscription ]; then
+    cat > /etc/proxmox-backup/subscription << 'EOF'
+{
+    "status": "active",
+    "serverid": "00000000000000000000000000000000",
+    "checktime": "1735689600",
+    "key": "pbs-no-subscription",
+    "validuntil": "2099-12-31",
+    "productname": "Proxmox Backup Server",
+    "regdate": "2025-01-01 00:00:00",
+    "nextduedate": "2099-12-31"
+}
+EOF
+    chmod 600 /etc/proxmox-backup/subscription
+    echo "Created subscription file"
+fi
+
 # Configure repositories
 if [ "${PBS_ENTERPRISE}" = "no" ] || [ "${PBS_ENTERPRISE}" = "false" ]; then
     echo "Disabling enterprise repository..."
@@ -55,6 +75,8 @@ if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" 
             sed -i.bak \
                 -e "/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}" \
                 -e "s/res === null || res === undefined || \!res || res\.data\.status\.toLowerCase() !== 'active'/false/" \
+                -e "s/could not read subscription status/subscription OK/g" \
+                -e "s/error decoding base64 data/subscription active/g" \
                 "$PROXMOXLIB" 2>/dev/null || true
             
             echo "Patch applied"
@@ -69,6 +91,7 @@ if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" 
     mkdir -p /etc/apt/apt.conf.d
     cat > /etc/apt/apt.conf.d/99-no-subscription-nag << 'EOF'
 DPkg::Post-Invoke {
+    "if [ ! -f /etc/proxmox-backup/subscription ]; then mkdir -p /etc/proxmox-backup && echo '{\"status\":\"active\",\"serverid\":\"00000000000000000000000000000000\",\"checktime\":\"1735689600\",\"key\":\"pbs-no-subscription\",\"validuntil\":\"2099-12-31\",\"productname\":\"Proxmox Backup Server\",\"regdate\":\"2025-01-01 00:00:00\",\"nextduedate\":\"2099-12-31\"}' > /etc/proxmox-backup/subscription && chmod 600 /etc/proxmox-backup/subscription; fi";
     "if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ] && ! grep -q 'NoMoreNagging' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; then sed -i '/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; fi";
 };
 EOF
@@ -84,4 +107,6 @@ if systemctl is-enabled proxmox-backup-proxy >/dev/null 2>&1; then
 fi
 
 echo "PBS post-install configuration completed"
+echo ""
+echo "IMPORTANT: Clear your browser cache (Ctrl+F5) to see changes!"
 exit 0

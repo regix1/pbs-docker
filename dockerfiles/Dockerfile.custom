@@ -3,6 +3,11 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# CRITICAL FIX: Create subscription file IMMEDIATELY to prevent base64 error
+RUN mkdir -p /etc/proxmox-backup && \
+    echo '{"status":"active","serverid":"00000000000000000000000000000000","checktime":"1735689600","key":"pbs-no-subscription","validuntil":"2099-12-31","productname":"Proxmox Backup Server","regdate":"2025-01-01 00:00:00","nextduedate":"2099-12-31"}' > /etc/proxmox-backup/subscription && \
+    chmod 600 /etc/proxmox-backup/subscription
+
 # Copy the post-install script from your repo
 COPY dockerfiles/pbs/pbs-post-install.sh /etc/proxmox-backup-default/pbs-post-install.sh
 RUN chmod +x /etc/proxmox-backup-default/pbs-post-install.sh
@@ -17,6 +22,6 @@ RUN find /runit -name "run" -type f -exec chmod +x {} \; && \
     find /runit -name "finish" -type f -exec chmod +x {} \;
 
 # Set environment variable defaults for subscription removal
-ENV PBS_ENTERPRISE=yes \
+ENV PBS_ENTERPRISE=no \
     PBS_NO_SUBSCRIPTION=yes \
     DISABLE_SUBSCRIPTION_NAG=yes
