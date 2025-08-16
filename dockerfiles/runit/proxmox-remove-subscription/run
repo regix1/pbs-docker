@@ -3,39 +3,69 @@ exec 2>&1
 
 SERVICE_NAME="proxmox-remove-subscription"
 MARKER_FILE="/var/lib/proxmox-backup/.subscription-nag-disabled"
+SCRIPT_LOG="/var/log/proxmox-backup/subscription-removal.log"
 
-echo "[$SERVICE_NAME] Starting service..."
+echo "[$SERVICE_NAME] Starting subscription removal service..."
+
+# Create log file
+mkdir -p /var/log/proxmox-backup
+touch "$SCRIPT_LOG"
 
 # Check if already completed
 if [ -f "$MARKER_FILE" ]; then
-    echo "[$SERVICE_NAME] Subscription nag already removed, sleeping forever..."
+    echo "[$SERVICE_NAME] Subscription nag already removed (marker exists)" | tee -a "$SCRIPT_LOG"
     exec sleep infinity
 fi
 
-# Wait for PBS API to be ready (max 30 seconds)
-echo "[$SERVICE_NAME] Waiting for PBS API to start..."
-for i in $(seq 1 30); do
-    if curl -k -s https://localhost:8007/ > /dev/null 2>&1; then
-        echo "[$SERVICE_NAME] PBS API is ready"
-        break
-    fi
-    sleep 1
+# Wait for PBS services to be fully ready
+echo "[$SERVICE_NAME] Waiting for PBS services to start..." | tee -a "$SCRIPT_LOG"
+
+# First wait for the API service to exist
+while [ ! -f "/usr/lib/x86_64-linux-gnu/proxmox-backup/proxmox-backup-api" ] && \
+      [ ! -f "/usr/lib/aarch64-linux-gnu/proxmox-backup/proxmox-backup-api" ]; do
+    echo "[$SERVICE_NAME] Waiting for PBS binaries..." | tee -a "$SCRIPT_LOG"
+    sleep 2
 done
 
-# Run the post-install script
-POST_INSTALL_SCRIPT="/etc/proxmox-backup-default/pbs-post-install.sh"
-if [ -f "$POST_INSTALL_SCRIPT" ]; then
-    echo "[$SERVICE_NAME] Running PBS post-install configuration..."
-    if sh "$POST_INSTALL_SCRIPT"; then
-        echo "[$SERVICE_NAME] Post-install script completed successfully"
+# Wait for proxmoxlib.js to exist
+PROXMOXLIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
+echo "[$SERVICE_NAME] Waiting for proxmoxlib.js..." | tee -a "$SCRIPT_LOG"
+for i in $(seq 1 60); do
+    if [ -f "$PROXMOXLIB" ]; then
+        echo "[$SERVICE_NAME] Found proxmoxlib.js" | tee -a "$SCRIPT_LOG"
+        break
+    fi
+    sleep 2
+done
+
+# Wait for PBS API to be responsive
+echo "[$SERVICE_NAME] Waiting for PBS API to respond..." | tee -a "$SCRIPT_LOG"
+for i in $(seq 1 30); do
+    if curl -k -s https://localhost:8007/ > /dev/null 2>&1; then
+        echo "[$SERVICE_NAME] PBS API is ready" | tee -a "$SCRIPT_LOG"
+        break
+    fi
+    sleep 2
+done
+
+# Give it a bit more time to ensure everything is fully loaded
+sleep 5
+
+# Run the actual patching script
+echo "[$SERVICE_NAME] Running subscription removal script..." | tee -a "$SCRIPT_LOG"
+if [ -f "/etc/proxmox-backup-default/pbs-post-install.sh" ]; then
+    if sh -x "/etc/proxmox-backup-default/pbs-post-install.sh" >> "$SCRIPT_LOG" 2>&1; then
+        echo "[$SERVICE_NAME] Script completed successfully" | tee -a "$SCRIPT_LOG"
         touch "$MARKER_FILE"
     else
-        echo "[$SERVICE_NAME] WARNING: Post-install script failed with exit code $?"
+        EXIT_CODE=$?
+        echo "[$SERVICE_NAME] Script failed with exit code $EXIT_CODE" | tee -a "$SCRIPT_LOG"
+        # Don't mark as complete so it can retry
     fi
 else
-    echo "[$SERVICE_NAME] Post-install script not found"
+    echo "[$SERVICE_NAME] ERROR: Post-install script not found!" | tee -a "$SCRIPT_LOG"
 fi
 
-# Sleep forever to prevent restarts
-echo "[$SERVICE_NAME] Complete, sleeping forever..."
+# Keep the service running
+echo "[$SERVICE_NAME] Completed, keeping service alive..." | tee -a "$SCRIPT_LOG"
 exec sleep infinity
