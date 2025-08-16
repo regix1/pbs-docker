@@ -8,16 +8,104 @@ PROXMOXLIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
 
 echo "[$SERVICE_NAME] Starting subscription removal service..."
 
-# OVERRIDE THE FILE FROM THE SOURCE - THIS IS THE FIX
-if [ -f "/etc/proxmox-backup-default/pbs-post-install.sh.new" ]; then
-    echo "[$SERVICE_NAME] Overriding pbs-post-install.sh with new version..." | tee -a "$SCRIPT_LOG"
-    cp -f /etc/proxmox-backup-default/pbs-post-install.sh.new /etc/proxmox-backup-default/pbs-post-install.sh
-    chmod +x /etc/proxmox-backup-default/pbs-post-install.sh
-fi
-
 # Create log directory and file
 mkdir -p /var/log/proxmox-backup
 echo "=== Starting new run at $(date) ===" >> "$SCRIPT_LOG"
+
+# ALWAYS create the correct script at runtime to avoid Docker cache issues
+cat > /etc/proxmox-backup-default/pbs-post-install.sh << 'SCRIPT_END'
+#!/bin/bash
+# Don't use set -e because arithmetic operations can return non-zero
+
+# Environment variables with defaults
+PBS_ENTERPRISE=${PBS_ENTERPRISE:-"no"}
+PBS_NO_SUBSCRIPTION=${PBS_NO_SUBSCRIPTION:-"yes"}
+DISABLE_SUBSCRIPTION_NAG=${DISABLE_SUBSCRIPTION_NAG:-"yes"}
+
+echo "PBS Post-Install Configuration:"
+echo "  PBS_ENTERPRISE=${PBS_ENTERPRISE}"
+echo "  PBS_NO_SUBSCRIPTION=${PBS_NO_SUBSCRIPTION}"
+echo "  DISABLE_SUBSCRIPTION_NAG=${DISABLE_SUBSCRIPTION_NAG}"
+
+VERSION="$(awk -F'=' '/^VERSION_CODENAME=/{ print $NF }' /etc/os-release)"
+
+# Configure repositories
+if [ "${PBS_ENTERPRISE}" = "no" ] || [ "${PBS_ENTERPRISE}" = "false" ]; then
+    echo "Disabling enterprise repository..."
+    echo "# deb https://enterprise.proxmox.com/debian/pbs ${VERSION} pbs-enterprise" > /etc/apt/sources.list.d/pbs-enterprise.list
+fi
+
+if [ "${PBS_NO_SUBSCRIPTION}" = "yes" ] || [ "${PBS_NO_SUBSCRIPTION}" = "true" ]; then
+    echo "Enabling no-subscription repository..."
+    echo "deb http://download.proxmox.com/debian/pbs ${VERSION} pbs-no-subscription" > /etc/apt/sources.list.d/pbs-install-repo.list
+fi
+
+# Disable subscription nag if requested
+if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" = "true" ]; then
+    echo "Disabling subscription nag in UI..."
+    
+    # Primary target file
+    PROXMOXLIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
+    
+    if [ -f "$PROXMOXLIB" ]; then
+        # Create original backup if not exists
+        if [ ! -f "${PROXMOXLIB}.original" ]; then
+            cp "$PROXMOXLIB" "${PROXMOXLIB}.original"
+            echo "Created original backup: ${PROXMOXLIB}.original"
+        fi
+        
+        echo "Applying subscription nag patches..."
+        
+        # Pattern 1: Fix the actual subscription check
+        sed -i "s/res\.data\.status\.toLowerCase() !== 'active'/res.data.status.toLowerCase() === 'NoMoreNagging'/g" "$PROXMOXLIB"
+        echo "✓ Patched subscription status check"
+        
+        # Pattern 2: Change the "No valid subscription" message
+        sed -i "s/No valid subscription/Subscription OK/g" "$PROXMOXLIB"
+        echo "✓ Patched subscription message"
+        
+        # Pattern 3: Alternative check pattern
+        sed -i "s/data\.status !== 'active'/data.status === 'NoMoreNagging'/g" "$PROXMOXLIB"
+        echo "✓ Patched alternative status check"
+        
+        # Pattern 4: Double-quote variant
+        sed -i 's/data\.status\.toLowerCase() !== "active"/data.status.toLowerCase() === "NoMoreNagging"/g' "$PROXMOXLIB"
+        echo "✓ Patched double-quote variant"
+        
+        # Verification
+        echo ""
+        echo "Verification Results:"
+        if grep -q "NoMoreNagging" "$PROXMOXLIB"; then
+            echo "✓ NoMoreNagging marker found - patch successful!"
+        else
+            echo "⚠ NoMoreNagging marker not found"
+        fi
+        
+        if grep -q "No valid subscription" "$PROXMOXLIB"; then
+            echo "⚠ Warning: 'No valid subscription' text still present"
+        else
+            echo "✓ 'No valid subscription' text successfully removed"
+        fi
+    else
+        echo "ERROR: proxmoxlib.js not found"
+        exit 1
+    fi
+    
+    # Create marker file
+    mkdir -p /var/lib/proxmox-backup
+    touch /var/lib/proxmox-backup/.subscription-nag-disabled
+fi
+
+echo "Signaling PBS proxy to reload..."
+pkill -HUP -f proxmox-backup-proxy 2>/dev/null || true
+
+echo "PBS post-install configuration completed successfully!"
+echo "NOTE: Clear your browser cache (Ctrl+F5) to see changes!"
+exit 0
+SCRIPT_END
+
+chmod +x /etc/proxmox-backup-default/pbs-post-install.sh
+echo "[$SERVICE_NAME] Script created/updated" | tee -a "$SCRIPT_LOG"
 
 echo "[$SERVICE_NAME] Waiting for proxmoxlib.js to check current state..." | tee -a "$SCRIPT_LOG"
 
@@ -75,36 +163,21 @@ sleep 10
 
 # Run the actual patching script
 echo "[$SERVICE_NAME] Running subscription removal script..." | tee -a "$SCRIPT_LOG"
-SCRIPT_PATH="/etc/proxmox-backup-default/pbs-post-install.sh"
-
-if [ -f "$SCRIPT_PATH" ]; then
-    echo "[$SERVICE_NAME] Found script at $SCRIPT_PATH" | tee -a "$SCRIPT_LOG"
-    echo "[$SERVICE_NAME] Script size: $(stat -c%s "$SCRIPT_PATH") bytes" | tee -a "$SCRIPT_LOG"
+if /bin/bash /etc/proxmox-backup-default/pbs-post-install.sh >> "$SCRIPT_LOG" 2>&1; then
+    echo "[$SERVICE_NAME] Script completed successfully" | tee -a "$SCRIPT_LOG"
     
-    # Make sure it's executable
-    chmod +x "$SCRIPT_PATH"
-    
-    # Run the script using bash explicitly
-    if /bin/bash "$SCRIPT_PATH" >> "$SCRIPT_LOG" 2>&1; then
-        echo "[$SERVICE_NAME] Script completed successfully" | tee -a "$SCRIPT_LOG"
-        
-        # Verify the patch was actually applied
-        if grep -q "NoMoreNagging" "$PROXMOXLIB" 2>/dev/null; then
-            echo "[$SERVICE_NAME] ✓ Patch verified - NoMoreNagging found" | tee -a "$SCRIPT_LOG"
-            touch "$MARKER_FILE"
-        else
-            echo "[$SERVICE_NAME] ⚠ WARNING: Script ran but patch not verified!" | tee -a "$SCRIPT_LOG"
-        fi
+    # Verify the patch was actually applied
+    if grep -q "NoMoreNagging" "$PROXMOXLIB" 2>/dev/null; then
+        echo "[$SERVICE_NAME] ✓ Patch verified - NoMoreNagging found" | tee -a "$SCRIPT_LOG"
+        touch "$MARKER_FILE"
     else
-        EXIT_CODE=$?
-        echo "[$SERVICE_NAME] Script failed with exit code $EXIT_CODE" | tee -a "$SCRIPT_LOG"
-        echo "[$SERVICE_NAME] Last 20 lines of log:" | tee -a "$SCRIPT_LOG"
-        tail -n 20 "$SCRIPT_LOG"
+        echo "[$SERVICE_NAME] ⚠ WARNING: Script ran but patch not verified!" | tee -a "$SCRIPT_LOG"
     fi
 else
-    echo "[$SERVICE_NAME] ERROR: Script not found at $SCRIPT_PATH!" | tee -a "$SCRIPT_LOG"
-    echo "[$SERVICE_NAME] Checking what files exist:" | tee -a "$SCRIPT_LOG"
-    ls -la /etc/proxmox-backup-default/ | tee -a "$SCRIPT_LOG"
+    EXIT_CODE=$?
+    echo "[$SERVICE_NAME] Script failed with exit code $EXIT_CODE" | tee -a "$SCRIPT_LOG"
+    echo "[$SERVICE_NAME] Last 20 lines of log:" | tee -a "$SCRIPT_LOG"
+    tail -n 20 "$SCRIPT_LOG"
 fi
 
 echo "[$SERVICE_NAME] Service complete, keeping alive..." | tee -a "$SCRIPT_LOG"
