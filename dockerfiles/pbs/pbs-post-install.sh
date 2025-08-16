@@ -80,9 +80,8 @@ if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" 
     touch /var/lib/proxmox-backup/.subscription-nag-disabled
 fi
 
-echo "Signaling PBS proxy to reload..."
-pkill -HUP -f proxmox-backup-proxy 2>/dev/null || true
-
+# DO NOT send SIGHUP to proxy - it causes restart loops in containers
 echo "PBS post-install configuration completed successfully!"
 echo "NOTE: Clear your browser cache (Ctrl+F5) to see changes!"
+echo "The changes will take effect on next page reload."
 exit 0
