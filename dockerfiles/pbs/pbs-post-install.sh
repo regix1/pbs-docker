@@ -13,11 +13,6 @@ echo "  DISABLE_SUBSCRIPTION_NAG=${DISABLE_SUBSCRIPTION_NAG}"
 
 VERSION="$(awk -F'=' '/^VERSION_CODENAME=/{ print $NF }' /etc/os-release)"
 
-# Remove subscription file to prevent base64 errors
-echo "Removing subscription file..."
-rm -f /etc/proxmox-backup/subscription
-mkdir -p /etc/proxmox-backup
-
 # Configure repositories
 if [ "${PBS_ENTERPRISE}" = "no" ] || [ "${PBS_ENTERPRISE}" = "false" ]; then
     echo "Disabling enterprise repository..."
@@ -33,78 +28,126 @@ fi
 if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" = "true" ]; then
     echo "Disabling subscription nag in UI..."
     
-    JS_FILE="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
-    BACKUP_DIR="/usr/share/javascript/proxmox-widget-toolkit"
-    TIMESTAMP=$(date +%Y%m%d%H%M%S)
-    BACKUP_FILE="${BACKUP_DIR}/proxmoxlib.js.bak.${TIMESTAMP}"
+    # Primary target file
+    PROXMOXLIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
     
-    # Wait for the file to exist
+    # Wait for the file to exist (max 30 seconds)
     for i in $(seq 1 30); do
-        if [ -f "$JS_FILE" ]; then
+        if [ -f "$PROXMOXLIB" ]; then
             echo "Found proxmoxlib.js"
             break
         fi
         sleep 1
     done
     
-    if [ -f "$JS_FILE" ]; then
-        # Check if already patched
-        if grep -q "NoMoreNagging" "$JS_FILE"; then
-            echo "Already patched."
+    if [ -f "$PROXMOXLIB" ]; then
+        # Create original backup if not exists
+        if [ ! -f "${PROXMOXLIB}.original" ]; then
+            cp "$PROXMOXLIB" "${PROXMOXLIB}.original"
+            echo "Created original backup: ${PROXMOXLIB}.original"
+        fi
+        
+        # METHOD 1: Original patching method
+        echo "Applying Method 1: Original patch..."
+        
+        # Apply multiple patterns from the original method
+        sed -i.method1 \
+            -e "/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}" \
+            -e "s/res === null || res === undefined || \!res/true/g" \
+            -e "s/res\.data\.status\.toLowerCase() !== 'active'/false/g" \
+            -e "s/data\.status !== 'active'/false/g" \
+            -e "s/Ext\.Msg\.show/void(0);\/\/Ext.Msg.show/g" \
+            "$PROXMOXLIB" 2>/dev/null || true
+        
+        echo "Method 1 applied"
+        
+        # METHOD 2: Bloodpack's method for PBS v4
+        echo "Applying Method 2: Bloodpack's PBS v4 patch..."
+        
+        # Script to remove the Proxmox Backup Server no subscription nag.
+        # Copyright (c) 2025 Bloodpack
+        # Author: Bloodpack 
+        # License: MIT license
+        # https://github.com/Bloodpack/proxmox_nag_removal.git
+        # VERSION: 2.00 from 08.08.2025
+        
+        BACKUP_DIR="/usr/share/javascript/proxmox-widget-toolkit"
+        TIMESTAMP=$(date +%Y%m%d%H%M%S)
+        BACKUP_FILE="${BACKUP_DIR}/proxmoxlib.js.bak.${TIMESTAMP}"
+        
+        # Backup current state
+        cp "$PROXMOXLIB" "$BACKUP_FILE"
+        echo "[no-nag] Backup created: $BACKUP_FILE"
+        
+        # Rotate backups, keep only last 3
+        BACKUPS=($(ls -1t ${BACKUP_DIR}/proxmoxlib.js.bak.* 2>/dev/null))
+        NUM_BACKUPS=${#BACKUPS[@]}
+        if [ "$NUM_BACKUPS" -gt 3 ]; then
+            for ((i=3; i<NUM_BACKUPS; i++)); do
+                rm -f "${BACKUPS[$i]}"
+                echo "[no-nag] Removed old backup: ${BACKUPS[$i]}"
+            done
+        fi
+        
+        # Apply Bloodpack's patch for PBS v4
+        sed -i "s/\.toLowerCase() !== 'active'/=== 'NoMoreNagging'/g" "$PROXMOXLIB"
+        
+        echo "Method 2 applied"
+        
+        # Additional cleanup patterns - catch any remaining subscription checks
+        echo "Applying additional cleanup patterns..."
+        
+        # Remove any "No valid subscription" messages
+        sed -i "s/No valid subscription/Subscription OK/g" "$PROXMOXLIB" 2>/dev/null || true
+        
+        # Patch any remaining subscription status checks
+        sed -i "s/'active'/true/g" "$PROXMOXLIB" 2>/dev/null || true
+        
+        # Final verification
+        if grep -q "NoMoreNagging" "$PROXMOXLIB"; then
+            echo "✓ All patches applied successfully - subscription nag removed"
         else
-            # Backup original
-            cp "$JS_FILE" "$BACKUP_FILE"
-            echo "Backup created: $BACKUP_FILE"
-            
-            # Rotate backups, keep only last 3
-            BACKUPS=($(ls -1t ${BACKUP_DIR}/proxmoxlib.js.bak.* 2>/dev/null))
-            NUM_BACKUPS=${#BACKUPS[@]}
-            if [ "$NUM_BACKUPS" -gt 3 ]; then
-                for ((i=3; i<NUM_BACKUPS; i++)); do
-                    rm -f "${BACKUPS[$i]}"
-                    echo "Removed old backup: ${BACKUPS[$i]}"
-                done
-            fi
-            
-            # Apply patch for PBS v4 (the exact method from the script you provided)
-            sed -i "s/\.toLowerCase() !== 'active'/=== 'NoMoreNagging'/g" "$JS_FILE"
-            
-            # Also apply additional patches to handle all cases
-            sed -i "s/Ext.Msg.show({/void({ \/\//g" "$JS_FILE"
-            sed -i 's/No valid subscription/Subscription OK/g' "$JS_FILE"
-            sed -i 's/could not read subscription status//g' "$JS_FILE"
-            sed -i 's/error decoding base64 data//g' "$JS_FILE"
-            
-            # Confirm patch
-            if grep -q "NoMoreNagging" "$JS_FILE"; then
-                echo "Patch applied successfully."
-            else
-                echo "Patch failed, restoring backup..."
-                cp "$BACKUP_FILE" "$JS_FILE"
-                exit 1
-            fi
+            echo "⚠ Warning: NoMoreNagging marker not found, but patches were applied"
         fi
     else
         echo "Warning: proxmoxlib.js not found"
     fi
     
-    # Create APT hook for persistence (using the new patch method)
+    # Also check and patch PBS-specific files
+    echo "Checking for PBS-specific GUI files..."
+    for file in /usr/share/pbs-www/*.js /usr/share/javascript/proxmox-backup/*.js; do
+        if [ -f "$file" ]; then
+            echo "Patching $(basename $file)..."
+            sed -i \
+                -e "s/No valid subscription/Subscription OK/g" \
+                -e "s/\.toLowerCase() !== 'active'/=== 'NoMoreNagging'/g" \
+                -e "s/data\.status !== 'active'/false/g" \
+                "$file" 2>/dev/null || true
+        fi
+    done
+    
+    # Create apt hook to maintain ALL patches after updates
     mkdir -p /etc/apt/apt.conf.d
-    cat > /etc/apt/apt.conf.d/99-pbs-no-nag << 'EOF'
+    cat > /etc/apt/apt.conf.d/99-no-subscription-nag << 'EOF'
 DPkg::Post-Invoke {
-    "rm -f /etc/proxmox-backup/subscription 2>/dev/null || true";
-    "if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ] && ! grep -q 'NoMoreNagging' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; then sed -i \"s/\.toLowerCase() !== 'active'/=== 'NoMoreNagging'/g\" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null; fi";
+    "if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ]; then \
+        # Apply both methods \
+        sed -i '/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; \
+        sed -i 's/\.toLowerCase() !== '\''active'\''/=== '\''NoMoreNagging'\''/g' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; \
+        sed -i 's/No valid subscription/Subscription OK/g' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; \
+    fi";
 };
 EOF
     
+    # Create marker file
     touch /var/lib/proxmox-backup/.subscription-nag-disabled
 fi
 
-echo "PBS post-install configuration completed"
-echo ""
-echo "IMPORTANT: Clear your browser cache!"
-echo "  - Press Ctrl+Shift+Delete"
-echo "  - Select 'Cached images and files'"
-echo "  - Clear data"
-echo "  - Or use incognito/private window"
+# Restart PBS proxy if it's running to apply changes
+if systemctl is-enabled proxmox-backup-proxy >/dev/null 2>&1; then
+    echo "Restarting PBS proxy to apply changes..."
+    systemctl restart proxmox-backup-proxy || true
+fi
+
+echo "PBS post-install configuration completed successfully"
 exit 0
