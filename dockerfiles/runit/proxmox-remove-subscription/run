@@ -42,11 +42,12 @@ if [ -f "$PROXMOXLIB" ]; then
     echo "[$SERVICE_NAME] JavaScript patched"
 fi
 
-# Send reload signal to proxy
-pkill -HUP -f proxmox-backup-proxy || true
+# DO NOT send HUP signal - it's causing the proxy to crash
+# The patches will take effect when users refresh their browsers
 
 touch "$MARKER_FILE"
 echo "[$SERVICE_NAME] Subscription removal complete"
+echo "[$SERVICE_NAME] Users need to clear browser cache (Ctrl+F5) to see changes"
 
 # Keep service running and check periodically for updates
 while true; do
@@ -59,6 +60,9 @@ while true; do
             -e "s/could not read subscription status/subscription check disabled/g" \
             -e "s/error decoding base64 data/subscription not required/g" \
             "$PROXMOXLIB" 2>/dev/null || true
-        pkill -HUP -f proxmox-backup-proxy || true
+        # DO NOT send HUP signal here either
+        echo "[$SERVICE_NAME] Patches re-applied - users need to refresh browsers"
     fi
+    # Also ensure subscription file stays removed
+    rm -f /etc/proxmox-backup/subscription 2>/dev/null || true
 done
