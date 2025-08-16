@@ -1,47 +1,19 @@
 #!/bin/sh
+# Runit service that removes subscription checks and errors
 exec 2>&1
 
 SERVICE_NAME="proxmox-remove-subscription"
 MARKER_FILE="/var/lib/proxmox-backup/.subscription-nag-disabled"
-DONE_FILE="/var/run/proxmox-remove-subscription.done"
 
-# ALWAYS create subscription file first with CORRECT permissions
-echo "[$SERVICE_NAME] Creating subscription file..."
-mkdir -p /etc/proxmox-backup
-cat > /etc/proxmox-backup/subscription << 'EOF'
-{
-    "status": "active",
-    "serverid": "00000000000000000000000000000000",
-    "checktime": "1735689600",
-    "key": "pbs-no-subscription",
-    "validuntil": "2099-12-31",
-    "productname": "Proxmox Backup Server",
-    "regdate": "2025-01-01 00:00:00",
-    "nextduedate": "2099-12-31"
-}
-EOF
-# FIX: Set correct ownership and permissions
-chown backup:backup /etc/proxmox-backup/subscription
-chmod 644 /etc/proxmox-backup/subscription
-echo "[$SERVICE_NAME] Subscription file created with correct permissions"
+echo "[$SERVICE_NAME] Starting subscription removal service..."
 
-# Check if we've been told to stop by the finish script
-if [ -f "$DONE_FILE" ]; then
-    echo "[$SERVICE_NAME] Service marked as complete, sleeping..."
-    exec sleep infinity
-fi
+# Remove subscription file - PBS handles missing file better than invalid one
+echo "[$SERVICE_NAME] Removing subscription file..."
+rm -f /etc/proxmox-backup/subscription
 
-echo "[$SERVICE_NAME] Starting service..."
-
-# Check if already completed
-if [ -f "$MARKER_FILE" ]; then
-    echo "[$SERVICE_NAME] Subscription nag already removed, exiting..."
-    exit 0
-fi
-
-# Wait for PBS API to be ready (max 30 seconds)
+# Wait for PBS API to be ready
 echo "[$SERVICE_NAME] Waiting for PBS API to start..."
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     if curl -k -s https://localhost:8007/ > /dev/null 2>&1; then
         echo "[$SERVICE_NAME] PBS API is ready"
         break
@@ -49,19 +21,44 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# Run the post-install script
-POST_INSTALL_SCRIPT="/etc/proxmox-backup-default/pbs-post-install.sh"
-if [ -f "$POST_INSTALL_SCRIPT" ]; then
-    echo "[$SERVICE_NAME] Running PBS post-install configuration..."
-    if sh "$POST_INSTALL_SCRIPT"; then
-        echo "[$SERVICE_NAME] Post-install script completed successfully"
-        touch "$MARKER_FILE"
-        exit 0
-    else
-        echo "[$SERVICE_NAME] WARNING: Post-install script failed with exit code $?"
-        exit 1
+# Patch the JavaScript to hide any subscription errors
+echo "[$SERVICE_NAME] Patching JavaScript files..."
+PROXMOXLIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
+
+if [ -f "$PROXMOXLIB" ]; then
+    # Create backup
+    if [ ! -f "${PROXMOXLIB}.original" ]; then
+        cp "$PROXMOXLIB" "${PROXMOXLIB}.original"
     fi
-else
-    echo "[$SERVICE_NAME] Post-install script not found"
-    exit 1
+    
+    # Apply patches to remove subscription nag and errors
+    sed -i \
+        -e "/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}" \
+        -e "s/res === null || res === undefined || \!res || res\.data\.status\.toLowerCase() !== 'active'/false/" \
+        -e "s/could not read subscription status/subscription check disabled/g" \
+        -e "s/error decoding base64 data/subscription not required/g" \
+        "$PROXMOXLIB" 2>/dev/null || true
+    
+    echo "[$SERVICE_NAME] JavaScript patched"
 fi
+
+# Send reload signal to proxy
+pkill -HUP -f proxmox-backup-proxy || true
+
+touch "$MARKER_FILE"
+echo "[$SERVICE_NAME] Subscription removal complete"
+
+# Keep service running and check periodically for updates
+while true; do
+    sleep 3600
+    # Re-apply patches if needed after updates
+    if [ -f "$PROXMOXLIB" ] && ! grep -q "NoMoreNagging" "$PROXMOXLIB" 2>/dev/null; then
+        echo "[$SERVICE_NAME] Re-applying patches after update..."
+        sed -i \
+            -e "/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}" \
+            -e "s/could not read subscription status/subscription check disabled/g" \
+            -e "s/error decoding base64 data/subscription not required/g" \
+            "$PROXMOXLIB" 2>/dev/null || true
+        pkill -HUP -f proxmox-backup-proxy || true
+    fi
+done

@@ -13,28 +13,12 @@ echo "  DISABLE_SUBSCRIPTION_NAG=${DISABLE_SUBSCRIPTION_NAG}"
 
 VERSION="$(awk -F'=' '/^VERSION_CODENAME=/{ print $NF }' /etc/os-release)"
 
-# ALWAYS ensure subscription file exists with CORRECT permissions
-echo "Ensuring subscription file exists..."
+# DO NOT create subscription file - PBS handles missing file better
+# Just ensure the directory exists
 mkdir -p /etc/proxmox-backup
-if [ ! -f /etc/proxmox-backup/subscription ]; then
-    cat > /etc/proxmox-backup/subscription << 'EOF'
-{
-    "status": "active",
-    "serverid": "00000000000000000000000000000000",
-    "checktime": "1735689600",
-    "key": "pbs-no-subscription",
-    "validuntil": "2099-12-31",
-    "productname": "Proxmox Backup Server",
-    "regdate": "2025-01-01 00:00:00",
-    "nextduedate": "2099-12-31"
-}
-EOF
-    echo "Created subscription file"
-fi
-# Always fix permissions in case they're wrong
-chown backup:backup /etc/proxmox-backup/subscription
-chmod 644 /etc/proxmox-backup/subscription
-echo "Fixed subscription file permissions"
+
+# Remove any existing subscription file
+rm -f /etc/proxmox-backup/subscription
 
 # Configure repositories
 if [ "${PBS_ENTERPRISE}" = "no" ] || [ "${PBS_ENTERPRISE}" = "false" ]; then
@@ -69,12 +53,10 @@ if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" 
             cp "$PROXMOXLIB" "${PROXMOXLIB}.original"
         fi
         
-        # Apply simple, safe patch - just replace the check function
-        # This is the most reliable method that works across PBS versions
+        # Apply patches
         if ! grep -q "NoMoreNagging" "$PROXMOXLIB" 2>/dev/null; then
             echo "Applying subscription nag patch..."
             
-            # Method 1: Replace the subscription check with a no-op
             sed -i.bak \
                 -e "/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}" \
                 -e "s/res === null || res === undefined || \!res || res\.data\.status\.toLowerCase() !== 'active'/false/" \
@@ -94,19 +76,13 @@ if [ "${DISABLE_SUBSCRIPTION_NAG}" = "yes" ] || [ "${DISABLE_SUBSCRIPTION_NAG}" 
     mkdir -p /etc/apt/apt.conf.d
     cat > /etc/apt/apt.conf.d/99-no-subscription-nag << 'EOF'
 DPkg::Post-Invoke {
-    "if [ ! -f /etc/proxmox-backup/subscription ]; then mkdir -p /etc/proxmox-backup && echo '{\"status\":\"active\",\"serverid\":\"00000000000000000000000000000000\",\"checktime\":\"1735689600\",\"key\":\"pbs-no-subscription\",\"validuntil\":\"2099-12-31\",\"productname\":\"Proxmox Backup Server\",\"regdate\":\"2025-01-01 00:00:00\",\"nextduedate\":\"2099-12-31\"}' > /etc/proxmox-backup/subscription && chown backup:backup /etc/proxmox-backup/subscription && chmod 644 /etc/proxmox-backup/subscription; fi";
-    "if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ] && ! grep -q 'NoMoreNagging' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; then sed -i '/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; fi";
+    "rm -f /etc/proxmox-backup/subscription 2>/dev/null || true";
+    "if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ] && ! grep -q 'NoMoreNagging' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; then sed -i -e '/data\.status.*{/{s/\!//;s/active/NoMoreNagging/}' -e 's/could not read subscription status/subscription OK/g' -e 's/error decoding base64 data/subscription active/g' /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null || true; fi";
 };
 EOF
     
     # Create marker file
     touch /var/lib/proxmox-backup/.subscription-nag-disabled
-fi
-
-# Restart PBS proxy if it's running
-if systemctl is-enabled proxmox-backup-proxy >/dev/null 2>&1; then
-    echo "Restarting PBS proxy..."
-    systemctl restart proxmox-backup-proxy || true
 fi
 
 echo "PBS post-install configuration completed"

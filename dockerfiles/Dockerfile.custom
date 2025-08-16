@@ -3,11 +3,8 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# CRITICAL FIX: Create subscription file with CORRECT permissions
-RUN mkdir -p /etc/proxmox-backup && \
-    echo '{"status":"active","serverid":"00000000000000000000000000000000","checktime":"1735689600","key":"pbs-no-subscription","validuntil":"2099-12-31","productname":"Proxmox Backup Server","regdate":"2025-01-01 00:00:00","nextduedate":"2099-12-31"}' > /etc/proxmox-backup/subscription && \
-    chown backup:backup /etc/proxmox-backup/subscription && \
-    chmod 644 /etc/proxmox-backup/subscription
+# DO NOT create subscription file - PBS handles missing file better than invalid one
+# The runit service will handle this at runtime
 
 # Copy the post-install script from your repo
 COPY dockerfiles/pbs/pbs-post-install.sh /etc/proxmox-backup-default/pbs-post-install.sh
