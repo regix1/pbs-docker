@@ -3,16 +3,13 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 # Add the runit service for subscription removal
-# The script will be created at runtime by the run script
 COPY dockerfiles/runit/proxmox-remove-subscription /runit/proxmox-remove-subscription
-RUN chmod +x /runit/proxmox-remove-subscription/run && \
-    chmod +x /runit/proxmox-remove-subscription/finish 2>/dev/null || true
+RUN chmod +x /runit/proxmox-remove-subscription/run
 
 # Ensure all runit services are executable
-RUN find /runit -name "run" -type f -exec chmod +x {} \; && \
-    find /runit -name "finish" -type f -exec chmod +x {} \; 2>/dev/null || true
+RUN find /runit -name "run" -type f -exec chmod +x {} \;
 
-# Set environment variable defaults for subscription removal
+# Set environment variable defaults
 ENV PBS_ENTERPRISE=no \
     PBS_NO_SUBSCRIPTION=yes \
     DISABLE_SUBSCRIPTION_NAG=yes
