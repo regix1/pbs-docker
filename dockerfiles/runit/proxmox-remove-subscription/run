@@ -8,6 +8,13 @@ PROXMOXLIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
 
 echo "[$SERVICE_NAME] Starting subscription removal service..."
 
+# OVERRIDE THE FILE FROM THE SOURCE - THIS IS THE FIX
+if [ -f "/etc/proxmox-backup-default/pbs-post-install.sh.new" ]; then
+    echo "[$SERVICE_NAME] Overriding pbs-post-install.sh with new version..." | tee -a "$SCRIPT_LOG"
+    cp -f /etc/proxmox-backup-default/pbs-post-install.sh.new /etc/proxmox-backup-default/pbs-post-install.sh
+    chmod +x /etc/proxmox-backup-default/pbs-post-install.sh
+fi
+
 # Create log directory and file
 mkdir -p /var/log/proxmox-backup
 echo "=== Starting new run at $(date) ===" >> "$SCRIPT_LOG"
