@@ -4,7 +4,36 @@ exec 2>&1
 SERVICE_NAME="proxmox-remove-subscription"
 PROXMOXLIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
 
-echo "[$SERVICE_NAME] Starting subscription removal service..."
+# Environment variables with defaults
+PBS_ENTERPRISE=${PBS_ENTERPRISE:-"no"}
+PBS_NO_SUBSCRIPTION=${PBS_NO_SUBSCRIPTION:-"yes"}
+DISABLE_SUBSCRIPTION_NAG=${DISABLE_SUBSCRIPTION_NAG:-"yes"}
+
+echo "[$SERVICE_NAME] Configuration:"
+echo "  PBS_ENTERPRISE=${PBS_ENTERPRISE}"
+echo "  PBS_NO_SUBSCRIPTION=${PBS_NO_SUBSCRIPTION}"
+echo "  DISABLE_SUBSCRIPTION_NAG=${DISABLE_SUBSCRIPTION_NAG}"
+
+VERSION="$(awk -F'=' '/^VERSION_CODENAME=/{ print $NF }' /etc/os-release)"
+
+# Configure repositories
+if [ "${PBS_ENTERPRISE}" = "no" ] || [ "${PBS_ENTERPRISE}" = "false" ]; then
+    echo "[$SERVICE_NAME] Disabling enterprise repository..."
+    echo "# deb https://enterprise.proxmox.com/debian/pbs ${VERSION} pbs-enterprise" > /etc/apt/sources.list.d/pbs-enterprise.list
+fi
+
+if [ "${PBS_NO_SUBSCRIPTION}" = "yes" ] || [ "${PBS_NO_SUBSCRIPTION}" = "true" ]; then
+    echo "[$SERVICE_NAME] Enabling no-subscription repository..."
+    echo "deb http://download.proxmox.com/debian/pbs ${VERSION} pbs-no-subscription" > /etc/apt/sources.list.d/pbs-install-repo.list
+fi
+
+# Check if subscription nag removal is enabled
+if [ "${DISABLE_SUBSCRIPTION_NAG}" != "yes" ] && [ "${DISABLE_SUBSCRIPTION_NAG}" != "true" ]; then
+    echo "[$SERVICE_NAME] Subscription nag removal disabled"
+    exec sleep infinity
+fi
+
+echo "[$SERVICE_NAME] Starting subscription nag removal..."
 
 # Wait for proxmoxlib.js to exist
 for i in $(seq 1 60); do
@@ -33,8 +62,9 @@ if [ -f "$PROXMOXLIB" ]; then
     else
         echo "[$SERVICE_NAME] Already patched"
     fi
+else
+    echo "[$SERVICE_NAME] proxmoxlib.js not found after waiting"
 fi
 
-# DO NOT send any signals to the proxy - just sleep
 echo "[$SERVICE_NAME] Complete"
 exec sleep infinity
