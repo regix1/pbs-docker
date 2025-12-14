@@ -2,10 +2,10 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# Disable enterprise repo (requires subscription) and enable no-subscription repo
-RUN rm -f /etc/apt/sources.list.d/pbs-enterprise.list 2>/dev/null || true && \
-    VERSION=$(awk -F'=' '/^VERSION_CODENAME=/{ print $NF }' /etc/os-release) && \
-    echo "deb http://download.proxmox.com/debian/pbs ${VERSION} pbs-no-subscription" > /etc/apt/sources.list.d/pbs-no-subscription.list && \
+# Disable Proxmox enterprise repo (requires subscription) - inotify-tools comes from Debian repos
+RUN rm -f /etc/apt/sources.list.d/pbs-enterprise.list /etc/apt/sources.list.d/pbs-enterprise.sources 2>/dev/null || true && \
+    rm -f /etc/apt/sources.list.d/ceph.list 2>/dev/null || true && \
+    find /etc/apt/sources.list.d/ -type f \( -name '*enterprise*' -o -name '*proxmox*' \) -delete 2>/dev/null || true && \
     apt-get update && apt-get install -y --no-install-recommends \
     inotify-tools \
     && rm -rf /var/lib/apt/lists/*
