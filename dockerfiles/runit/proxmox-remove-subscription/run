@@ -47,6 +47,7 @@ configure_repos() {
 
 # =============================================================================
 # apply_patches - Apply subscription nag patches to a single JS file
+# IMPORTANT: All patterns must produce valid JavaScript syntax!
 # =============================================================================
 apply_patches() {
     local target="$1"
@@ -67,94 +68,47 @@ apply_patches() {
     # Backup original if not already done
     [ ! -f "${target}.original" ] && cp "$target" "${target}.original"
 
-    # Create a temporary file for complex transformations
+    # Create a temporary file for transformations
     local tmpfile="${target}.patching"
     cp "$target" "$tmpfile"
 
     # -----------------------------------------------------------------
-    # PHASE 1: Status check patterns (desktop & mobile)
-    # Flips subscription status comparison logic so checks always pass
+    # PATTERN 1: proxmoxlib.js - checked_command subscription check
+    # Original: res.data.status.toLowerCase() !== 'active'
+    # Change to 'false' so the warning popup never shows
     # -----------------------------------------------------------------
     sed -i \
-        -e "s/res\.data\.status\.toLowerCase() !== 'active'/res.data.status.toLowerCase() === '${PATCH_MARKER}'/g" \
-        -e "s/res\.data\.status\.toLowerCase() !== \"active\"/res.data.status.toLowerCase() === \"${PATCH_MARKER}\"/g" \
-        -e "s/data\.status !== 'active'/data.status === '${PATCH_MARKER}'/g" \
-        -e "s/data\.status !== \"active\"/data.status === \"${PATCH_MARKER}\"/g" \
-        -e "s/data\.status\.toLowerCase() !== 'active'/data.status.toLowerCase() === '${PATCH_MARKER}'/g" \
-        -e "s/data\.status\.toLowerCase() !== \"active\"/data.status.toLowerCase() === \"${PATCH_MARKER}\"/g" \
-        -e "s/\.status\.toLowerCase() !== 'active'/.status.toLowerCase() === '${PATCH_MARKER}'/g" \
-        -e "s/\.status\.toLowerCase() !== \"active\"/.status.toLowerCase() === \"${PATCH_MARKER}\"/g" \
+        -e "s/res\.data\.status\.toLowerCase() !== 'active'/false \/* ${PATCH_MARKER} *\//g" \
+        -e "s/res\.data\.status\.toLowerCase()!=='active'/false\/*${PATCH_MARKER}*\//g" \
+        -e "s/res\.data\.status\.toLowerCase() !== \"active\"/false \/* ${PATCH_MARKER} *\//g" \
         "$tmpfile"
 
     # -----------------------------------------------------------------
-    # PHASE 2: Subscription text replacements (desktop & mobile)
+    # PATTERN 2: Dashboard.js - subscription status display
+    # Original: let subscriptionActive = status.toLowerCase() === 'active';
+    # Change comparison to 'true' so dashboard always shows active
+    # -----------------------------------------------------------------
+    sed -i \
+        -e "s/let subscriptionActive = status\.toLowerCase() === 'active'/let subscriptionActive = true \/* ${PATCH_MARKER} *\//g" \
+        -e "s/status\.toLowerCase() === 'active'/true \/* ${PATCH_MARKER} *\//g" \
+        "$tmpfile"
+
+    # -----------------------------------------------------------------
+    # PATTERN 3: Replace user-visible text strings (safe - just text)
     # -----------------------------------------------------------------
     sed -i \
         -e "s/No valid subscription/Subscription OK/g" \
-        -e "s/There is no subscription key/Subscription OK/g" \
-        -e "s/Your subscription status is/Subscription status:/g" \
         -e "s/You do not have a valid subscription for this server/Subscription active/g" \
         -e "s/You do not have a valid subscription/Subscription OK/g" \
-        -e "s/No Subscription/Active/g" \
-        -e "s/subscription status: none/subscription status: active/gi" \
-        -e "s/pbs-hierarchical-no-subscription-key/pbs-hierarchical-active-subscription/g" \
         "$tmpfile"
 
     # -----------------------------------------------------------------
-    # PHASE 2b: PBS-specific noSubKeyHtml replacement
+    # PATTERN 4: Bypass checked_command calls in Application.js
+    # Original: Proxmox.Utils.checked_command(Ext.emptyFn)
+    # Change to immediately-invoked empty function (valid JS, no-op)
     # -----------------------------------------------------------------
     sed -i \
-        -e "s/noSubKeyHtml:.*/noSubKeyHtml: 'Subscription OK', \/\/ ${PATCH_MARKER}/g" \
-        "$tmpfile"
-
-    # -----------------------------------------------------------------
-    # PHASE 3: Nag function disabling and checked_command bypass
-    # -----------------------------------------------------------------
-    sed -i \
-        -e "s/showSubscriptionNag\s*(/showSubscriptionNag_disabled(/g" \
-        -e "s/Proxmox\.Utils\.checked_command\s*(\s*function/Proxmox.Utils.checked_command_disabled(function/g" \
-        -e "s/Proxmox\.Utils\.checked_command(Ext\.emptyFn)/void(0) \/\/ ${PATCH_MARKER}/g" \
-        "$tmpfile"
-
-    # -----------------------------------------------------------------
-    # PHASE 3b: PBS Dashboard subscription status - make it always show active
-    # -----------------------------------------------------------------
-    sed -i \
-        -e "s/status\.toLowerCase() === 'active'/true \/\/ ${PATCH_MARKER}/g" \
-        -e "s/let subscriptionActive = .*/let subscriptionActive = true; \/\/ ${PATCH_MARKER}/g" \
-        "$tmpfile"
-
-    # -----------------------------------------------------------------
-    # PHASE 4: Perl multiline regex for complex patterns
-    # -----------------------------------------------------------------
-    if command -v perl >/dev/null 2>&1; then
-        perl -i -0pe '
-            # Disable the subscription popup Ext.Msg.show call
-            s/(Ext\.Msg\.show\s*\(\s*\{[^}]*title\s*:\s*["\x27]No valid subscription)/if(false) { $1/g;
-
-            # Short-circuit getSubscriptionStatus function
-            s/(getSubscriptionStatus\s*:\s*function)/${1}_disabled/g;
-        ' "$tmpfile" 2>/dev/null || true
-    fi
-
-    # -----------------------------------------------------------------
-    # PHASE 5: ExtJS dialog/modal patterns
-    # -----------------------------------------------------------------
-    sed -i \
-        -e "s/title:\s*gettext('No valid subscription')/title: gettext('Subscription OK')/g" \
-        -e "s/title:\s*\"No valid subscription\"/title: \"Subscription OK\"/g" \
-        -e "s/title:\s*'No valid subscription'/title: 'Subscription OK'/g" \
-        -e "s/msg:\s*Proxmox\.Utils\.getNoSubKeyHtml/msg: function() { return ''; } \/\/ /g" \
-        -e "s/getNoSubKeyHtml\s*(/getNoSubKeyHtml_disabled(/g" \
-        "$tmpfile"
-
-    # -----------------------------------------------------------------
-    # PHASE 6: CSS class-based subscription indicators
-    # -----------------------------------------------------------------
-    sed -i \
-        -e "s/x-masked-subscription/x-masked-subscription-hidden/g" \
-        -e "s/pve-subscription-warning/pve-subscription-ok/g" \
-        -e "s/fa-exclamation-triangle\(.*subscription\)/fa-check-circle\1/g" \
+        -e "s/Proxmox\.Utils\.checked_command(Ext\.emptyFn)/(function(){}\/* ${PATCH_MARKER} *\/)()/g" \
         "$tmpfile"
 
     # Move patched file into place atomically
@@ -169,7 +123,6 @@ apply_patches() {
         return 0
     else
         log "Warning: Patch markers not found in $(basename "$target") - patterns may have changed"
-        grep -n -i "subscription\|checked_command" "$target" 2>/dev/null | head -10 || true
         return 1
     fi
 }
