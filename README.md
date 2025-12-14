@@ -1,46 +1,35 @@
-# 🗄️ Proxmox Backup Server in Docker
-
-<div align="center">
+# Proxmox Backup Server in Docker
 
 [![GitHub Release](https://img.shields.io/github/v/release/regix1/pbs-docker?style=for-the-badge&logo=github)](https://github.com/regix1/pbs-docker/releases)
 [![GitHub Stars](https://img.shields.io/github/stars/regix1/pbs-docker?style=for-the-badge&logo=github)](https://github.com/regix1/pbs-docker)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=for-the-badge)](LICENSE)
 
-**Unofficial Proxmox Backup Server** • **Multi-Architecture** • **No Subscription Nag**
-
-[Quick Start](#-quick-start) • [Features](#-features) • [Installation](#-installation) • [Configuration](#-configuration) • [Support](#-support)
-
-</div>
+Unofficial Proxmox Backup Server built for Docker. Multi-architecture support (amd64/arm64) with subscription nag removal built in.
 
 ---
 
-## 🚀 Quick Start
-
-Get up and running in under a minute:
+## Quick Start
 
 ```bash
-# Pull and run PBS
 docker run -d \
   --name pbs \
   -p 8007:8007 \
   -v pbs-config:/etc/proxmox-backup \
   -v pbs-data:/datastore \
   ghcr.io/regix1/pbs-docker:latest
-
-# Access at https://localhost:8007
-# Login: admin / pbspbs (change immediately!)
 ```
 
-## 📦 Pre-built Images
+Then open `https://localhost:8007` and log in with `admin` / `pbspbs`. Change the password immediately.
 
-All images are available on GitHub Container Registry:
+## Pre-built Images
+
+Images are published to GitHub Container Registry:
 
 | Tag | Description | Architectures |
 |-----|-------------|---------------|
-| `latest` | Latest stable release | `amd64`, `arm64` |
-| ![Latest Release](https://img.shields.io/github/v/release/regix1/pbs-docker) | Latest version | `amd64`, `arm64` |
-| `amd64-latest` | AMD64 only | `amd64` |
-| `arm64-latest` | ARM64 only | `arm64` |
+| `latest` | Latest stable release | amd64, arm64 |
+| `amd64-latest` | AMD64 only | amd64 |
+| `arm64-latest` | ARM64 only | arm64 |
 
 ```bash
 # Multi-arch (auto-selects for your platform)
@@ -50,45 +39,42 @@ docker pull ghcr.io/regix1/pbs-docker:latest
 docker pull ghcr.io/regix1/pbs-docker:arm64-latest
 ```
 
-## 🎯 Features
+## What Works
 
-### ✅ What Works
-- ✨ **No Subscription Nag** - Enterprise features without the popups
-- 🔄 **Full Backup/Restore** functionality
-- 🌐 **Web UI** with all features
-- 📊 **Statistics & Monitoring**
-- 🔐 **User Management & ACLs**
-- 🗂️ **Multiple Datastores**
-- 🤖 **API Access**
-- 💾 **SMART Monitoring** (with configuration)
+- **Subscription nag removal** - No popups on desktop or mobile views
+- **Full backup/restore** - All PBS backup functionality
+- **Web UI** - Complete web interface
+- **Statistics and monitoring** - Dashboard and metrics
+- **User management and ACLs** - Full access control
+- **Multiple datastores** - Add as many as you need
+- **API access** - Full REST API
+- **SMART monitoring** - With device passthrough (see configuration)
 
-### ⚠️ Limitations
-- ❌ **ZFS** - Not available in container
-- ❌ **Shell Access** - Doesn't make sense in ephemeral containers
-- ❌ **PAM Authentication** - Use PBS authentication instead
+## Limitations
 
-## 📥 Installation
+- **ZFS** - Not available inside containers
+- **Shell access** - Disabled (ephemeral container, wouldn't persist anyway)
+- **PAM authentication** - Use PBS authentication instead
 
-### Using Docker Compose (Recommended)
+## Installation
 
-1. **Download the compose file:**
+### Docker Compose (Recommended)
+
+Download the compose file:
+
 ```bash
 wget https://raw.githubusercontent.com/regix1/pbs-docker/main/docker-compose.yml
 ```
 
-2. **Start the container:**
+Start the container:
+
 ```bash
 docker-compose up -d
 ```
 
-3. **Access the web interface:**
-   - URL: `https://<your-ip>:8007`
-   - Username: `admin`
-   - Password: `pbspbs`
-   
-   ⚠️ **Change the password immediately after first login!**
+Access the web interface at `https://<your-ip>:8007` with username `admin` and password `pbspbs`. Change the password after first login.
 
-### Using Docker CLI
+### Docker CLI
 
 ```bash
 docker run -d \
@@ -104,19 +90,19 @@ docker run -d \
   ghcr.io/regix1/pbs-docker:latest
 ```
 
-## ⚙️ Configuration
+## Configuration
 
-### 1️⃣ Add to Proxmox VE
+### Adding to Proxmox VE
 
-Get the PBS fingerprint for adding to Proxmox VE:
+Get the PBS fingerprint:
 
 ```bash
 docker exec pbs proxmox-backup-manager cert info | grep Fingerprint
 ```
 
-Follow the [official integration guide](https://pbs.proxmox.com/docs/pve-integration.html).
+Then follow the [official integration guide](https://pbs.proxmox.com/docs/pve-integration.html).
 
-### 2️⃣ Add Storage Volumes
+### Adding Storage Volumes
 
 Create `docker-compose.override.yml`:
 
@@ -130,9 +116,7 @@ services:
       - /mnt/usb-backup:/usb-backup
 ```
 
-### 3️⃣ Configure Timezone
-
-Add to `docker-compose.override.yml`:
+### Timezone
 
 ```yaml
 services:
@@ -141,9 +125,9 @@ services:
       TZ: America/New_York
 ```
 
-### 4️⃣ Enable SMART Monitoring
+### SMART Monitoring
 
-For disk health monitoring, add to `docker-compose.override.yml`:
+Pass through your drives and add the required capability:
 
 ```yaml
 services:
@@ -155,7 +139,9 @@ services:
       - SYS_RAWIO
 ```
 
-### 5️⃣ Persist All Data (Recommended)
+### Persist All Data
+
+For production use, bind mount everything:
 
 ```yaml
 volumes:
@@ -185,20 +171,41 @@ volumes:
       device: /srv/pbs/datastore
 ```
 
-## 🔧 Advanced Usage
-
-### Environment Variables
+## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TZ` | `UTC` | Timezone |
-| `PBS_ENTERPRISE` | `yes` | Enable enterprise repo |
-| `PBS_NO_SUBSCRIPTION` | `yes` | Remove subscription check |
-| `DISABLE_SUBSCRIPTION_NAG` | `yes` | Remove subscription nag popup |
+| `TZ` | `UTC` | Container timezone |
+| `PBS_ENTERPRISE` | `no` | Use enterprise apt repository |
+| `PBS_NO_SUBSCRIPTION` | `yes` | Use no-subscription apt repository |
+| `DISABLE_SUBSCRIPTION_NAG` | `yes` | Remove subscription popup from web UI |
 
-### Networking
+## Subscription Nag Removal
 
-For better performance, consider using host networking:
+The container includes a service that patches the Proxmox web interface to remove subscription warnings. This runs automatically at startup and watches for file changes (handles apt upgrades gracefully).
+
+**What gets patched:**
+
+- Desktop subscription status checks
+- Mobile view subscription banners
+- ExtJS popup dialogs
+- CSS warning indicators
+- The `checked_command` subscription verification function
+
+**Directories monitored:**
+
+- `/usr/share/javascript/proxmox-widget-toolkit`
+- `/usr/share/javascript/proxmox-backup`
+- `/usr/share/pbs-docs`
+- `/usr/share/javascript/pbs`
+
+The service uses `inotifywait` for efficient file monitoring. If a JS file gets replaced (e.g., during an update), patches are automatically reapplied.
+
+To disable nag removal, set `DISABLE_SUBSCRIPTION_NAG=no` in your environment.
+
+## Networking
+
+For better performance, especially with large backups:
 
 ```yaml
 services:
@@ -206,62 +213,48 @@ services:
     network_mode: host
 ```
 
-## 📊 System Requirements
+## System Requirements
 
 - **CPU**: 2+ cores recommended
 - **RAM**: 2GB minimum, 4GB+ recommended
-- **Storage**: 10GB for system + your backup storage needs
+- **Storage**: 10GB for system + your backup storage
 - **Architecture**: AMD64 or ARM64
 
-## 🛠️ Troubleshooting
+## Troubleshooting
 
-### Common Issues
+**Authentication failure:**
+- Make sure `/run` is mounted as tmpfs (required for PBS 2.1+)
+- Use `admin` not `admin@pbs` for the username
 
-**Authentication Failure:**
-- Ensure `/run` is mounted as `tmpfs` (required for PBS 2.1+)
-- Use `admin` not `admin@pbs` for login
-
-**Container Won't Start:**
+**Container won't start:**
 - Check logs: `docker logs pbs`
-- Verify ports aren't in use: `netstat -tulpn | grep 8007`
+- Verify port 8007 isn't already in use
 
-**Slow Performance:**
-- Increase memory allocation
-- Use host networking mode
-- Ensure storage is on fast disks (SSD recommended)
+**Slow performance:**
+- Increase container memory
+- Use host networking
+- Put storage on SSDs
 
-## 🤝 Support
+## Support
 
-### Original Author & Donations
-
-This project is based on the excellent work by **Kamil Trzciński** (ayufan).
+This project is based on work by [Kamil Trzciński](https://github.com/ayufan/pve-backup-server-dockerfiles) (ayufan).
 
 If you find this useful, consider supporting the original author:
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y8GCP24)
 
-### This Fork
+**This Fork:**
 
-- 🐛 [Report Issues](https://github.com/regix1/pbs-docker/issues)
-- 💡 [Request Features](https://github.com/regix1/pbs-docker/discussions)
-- 📖 [View Releases](https://github.com/regix1/pbs-docker/releases)
+- [Report Issues](https://github.com/regix1/pbs-docker/issues)
+- [Request Features](https://github.com/regix1/pbs-docker/discussions)
+- [View Releases](https://github.com/regix1/pbs-docker/releases)
 
-## 📝 License
+## License
 
-This project maintains the same licensing as Proxmox Backup Server (AGPL-3.0).
+AGPL-3.0, same as Proxmox Backup Server.
 
-## 🙏 Credits
+## Credits
 
 - Original dockerization by [Kamil Trzciński](https://github.com/ayufan/pve-backup-server-dockerfiles) (2020-2025)
 - Built from sources at [git.proxmox.com](http://git.proxmox.com/)
-- Proxmox® is a registered trademark of Proxmox Server Solutions GmbH
-
----
-
-<div align="center">
-
-**[⬆ Back to Top](#️-proxmox-backup-server-in-docker)**
-
-Made with ❤️ for the Proxmox community
-
-</div>
+- Proxmox is a registered trademark of Proxmox Server Solutions GmbH

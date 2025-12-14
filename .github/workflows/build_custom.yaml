@@ -13,6 +13,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  IMAGE_TITLE: Proxmox Backup Server
+  IMAGE_DESCRIPTION: Unofficial Proxmox Backup Server in Docker with subscription nag removal
 
 jobs:
   build-base:
@@ -78,17 +80,33 @@ jobs:
         echo "Building version: ${VERSION}, tag: ${TAG}"
         echo "Running on native $(uname -m) architecture"
 
-    # Build the BASE PBS image using OUR CUSTOM Dockerfile
-    - name: Build base PBS from source (Custom)
+    - name: Extract base metadata
+      id: meta-base
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=raw,value=${{ matrix.arch }}-base-${{ steps.version.outputs.tag }}
+          type=raw,value=${{ matrix.arch }}-base-latest
+        labels: |
+          org.opencontainers.image.title=${{ env.IMAGE_TITLE }} (Base)
+          org.opencontainers.image.description=Base PBS build without subscription removal
+          org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          org.opencontainers.image.vendor=regix1
+          org.opencontainers.image.licenses=AGPL-3.0
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+    - name: Build base PBS from source
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: dockerfiles/Dockerfile.build.custom  # Use our custom build file!
+        file: dockerfiles/Dockerfile.build.custom
         platforms: ${{ matrix.platform }}
         push: true
         tags: |
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ github.sha }}
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.arch }}-base-${{ steps.version.outputs.tag }}
+          ${{ steps.meta-base.outputs.tags }}
+        labels: ${{ steps.meta-base.outputs.labels }}
         cache-from: type=gha,scope=base-${{ matrix.arch }}
         cache-to: type=gha,mode=max,scope=base-${{ matrix.arch }}
         build-args: |
@@ -164,7 +182,14 @@ jobs:
         tags: |
           type=raw,value=${{ matrix.arch }}-${{ steps.version.outputs.tag }}
           type=raw,value=${{ matrix.arch }}-latest
-          type=sha,prefix=${{ matrix.arch }}-
+        labels: |
+          org.opencontainers.image.title=${{ env.IMAGE_TITLE }}
+          org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+          org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          org.opencontainers.image.vendor=regix1
+          org.opencontainers.image.licenses=AGPL-3.0
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          org.opencontainers.image.documentation=https://github.com/${{ github.repository }}#readme
 
     # Apply the CUSTOM layer with subscription removal on top of base
     - name: Build custom layer with no-nag
@@ -255,11 +280,11 @@ jobs:
 
     - name: Print image info
       run: |
-        echo "✅ Image published to GHCR:"
+        echo "Image published to GHCR:"
         echo "  Multi-arch: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}"
-        echo "  AMD64: ghcr.io/${{ github.repository }}:amd64-${{ steps.version.outputs.tag }}"
-        echo "  ARM64: ghcr.io/${{ github.repository }}:arm64-${{ steps.version.outputs.tag }}"
-        echo "  Latest: ghcr.io/${{ github.repository }}:latest"
+        echo "  AMD64:      ghcr.io/${{ github.repository }}:amd64-${{ steps.version.outputs.tag }}"
+        echo "  ARM64:      ghcr.io/${{ github.repository }}:arm64-${{ steps.version.outputs.tag }}"
+        echo "  Latest:     ghcr.io/${{ github.repository }}:latest"
 
   # Extract and upload release assets ONLY for releases
   upload-release-assets:
@@ -308,36 +333,34 @@ jobs:
         # Try to extract the .tgz file - check multiple possible locations
         echo "Looking for .tgz files..."
         
-        # First, let's see what .tgz files exist in the image
+        # List .tgz files in the image for debugging
         docker export ${CONTAINER_ID} | tar -t | grep "\.tgz$" | head -20
-        
+
         # Try to extract from root
         if docker cp ${CONTAINER_ID}:/proxmox-backup-server-${TAG}-${ARCH}.tgz . 2>/dev/null; then
-          echo "✓ Found /proxmox-backup-server-${TAG}-${ARCH}.tgz"
+          echo "Found /proxmox-backup-server-${TAG}-${ARCH}.tgz"
           ASSET_FILE="proxmox-backup-server-${TAG}-${ARCH}.tgz"
         elif docker cp ${CONTAINER_ID}:/proxmox-backup-server-${VERSION}-${ARCH}.tgz . 2>/dev/null; then
-          echo "✓ Found /proxmox-backup-server-${VERSION}-${ARCH}.tgz"
+          echo "Found /proxmox-backup-server-${VERSION}-${ARCH}.tgz"
           mv proxmox-backup-server-${VERSION}-${ARCH}.tgz proxmox-backup-server-${TAG}-${ARCH}.tgz
           ASSET_FILE="proxmox-backup-server-${TAG}-${ARCH}.tgz"
         elif docker cp ${CONTAINER_ID}:/proxmox-backup-server-${TAG}-dev.tgz . 2>/dev/null; then
-          echo "✓ Found /proxmox-backup-server-${TAG}-dev.tgz"
+          echo "Found /proxmox-backup-server-${TAG}-dev.tgz"
           mv proxmox-backup-server-${TAG}-dev.tgz proxmox-backup-server-${TAG}-${ARCH}.tgz
           ASSET_FILE="proxmox-backup-server-${TAG}-${ARCH}.tgz"
         else
-          echo "❌ No .tgz file found in expected locations"
+          echo "No .tgz file found in expected locations"
           ASSET_FILE=""
         fi
-        
-        # Clean up container
+
         docker rm ${CONTAINER_ID}
-        
-        # Upload to release if we found an asset
+
         if [ -n "${ASSET_FILE}" ] && [ -f "${ASSET_FILE}" ]; then
           echo "Uploading ${ASSET_FILE} to release..."
           gh release upload ${TAG} "${ASSET_FILE}" --clobber
-          echo "✅ Successfully uploaded ${ASSET_FILE}"
+          echo "Successfully uploaded ${ASSET_FILE}"
         else
-          echo "⚠️ No asset file to upload for ${ARCH}"
+          echo "Warning: No asset file to upload for ${ARCH}"
         fi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

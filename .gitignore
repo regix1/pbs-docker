@@ -4,3 +4,7 @@ proxmox-backup-client*.tgz
 /tmp/
 /build/
 /release/
+
+# Claude AI assistant files
+CLAUDE.md
+.claude/

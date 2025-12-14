@@ -2,6 +2,11 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# Install inotify-tools for efficient file watching
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    inotify-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 # Add the runit service for subscription removal
 COPY dockerfiles/runit/proxmox-remove-subscription /runit/proxmox-remove-subscription
 RUN chmod +x /runit/proxmox-remove-subscription/run
