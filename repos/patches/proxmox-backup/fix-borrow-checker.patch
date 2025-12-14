@@ -1,0 +1,22 @@
+diff --git a/pbs-client/src/pxar/extract.rs b/pbs-client/src/pxar/extract.rs
+--- a/pbs-client/src/pxar/extract.rs
++++ b/pbs-client/src/pxar/extract.rs
+@@ -1330,12 +1330,11 @@ where
+                         on_error,
+                     ) {
+                         Err(err) => {
+-                            error!(
+-                                "error extracting {}: {err}",
+-                                match entry.kind() {
+-                                    EntryKind::GoodbyeTable => "<directory>",
+-                                    _ => &entry.path().display().to_string(),
+-                                },
+-                            );
++                            let path_display = match entry.kind() {
++                                EntryKind::GoodbyeTable => "<directory>".to_string(),
++                                _ => entry.path().display().to_string(),
++                            };
++                            error!("error extracting {path_display}: {err}");
+                         }
+                         Ok(ControlFlow::Break(())) => break,
+                         Ok(ControlFlow::Continue(())) => (),
