@@ -93,6 +93,7 @@ apply_patches() {
         -e "s/No valid subscription/Subscription OK/g" \
         -e "s/There is no subscription key/Subscription OK/g" \
         -e "s/Your subscription status is/Subscription status:/g" \
+        -e "s/You do not have a valid subscription for this server/Subscription active/g" \
         -e "s/You do not have a valid subscription/Subscription OK/g" \
         -e "s/No Subscription/Active/g" \
         -e "s/subscription status: none/subscription status: active/gi" \
@@ -100,11 +101,27 @@ apply_patches() {
         "$tmpfile"
 
     # -----------------------------------------------------------------
-    # PHASE 3: Mobile-specific nag function disabling
+    # PHASE 2b: PBS-specific noSubKeyHtml replacement
+    # -----------------------------------------------------------------
+    sed -i \
+        -e "s/noSubKeyHtml:.*/noSubKeyHtml: 'Subscription OK', \/\/ ${PATCH_MARKER}/g" \
+        "$tmpfile"
+
+    # -----------------------------------------------------------------
+    # PHASE 3: Nag function disabling and checked_command bypass
     # -----------------------------------------------------------------
     sed -i \
         -e "s/showSubscriptionNag\s*(/showSubscriptionNag_disabled(/g" \
         -e "s/Proxmox\.Utils\.checked_command\s*(\s*function/Proxmox.Utils.checked_command_disabled(function/g" \
+        -e "s/Proxmox\.Utils\.checked_command(Ext\.emptyFn)/void(0) \/\/ ${PATCH_MARKER}/g" \
+        "$tmpfile"
+
+    # -----------------------------------------------------------------
+    # PHASE 3b: PBS Dashboard subscription status - make it always show active
+    # -----------------------------------------------------------------
+    sed -i \
+        -e "s/status\.toLowerCase() === 'active'/true \/\/ ${PATCH_MARKER}/g" \
+        -e "s/let subscriptionActive = .*/let subscriptionActive = true; \/\/ ${PATCH_MARKER}/g" \
         "$tmpfile"
 
     # -----------------------------------------------------------------
@@ -171,7 +188,7 @@ patch_all_js_files() {
     # Use find for recursive search (more portable than globstar)
     while IFS= read -r -d '' jsfile; do
         # Only patch files that contain subscription-related code
-        if grep -qiE "subscription|checked_command|NoSubKey" "$jsfile" 2>/dev/null; then
+        if grep -qiE "subscription|checked_command|NoSubKey|noSubKeyHtml" "$jsfile" 2>/dev/null; then
             apply_patches "$jsfile"
             patched=$((patched + 1))
         fi
@@ -208,7 +225,7 @@ watch_and_patch() {
 
             if [[ "$changed_file" == *.js ]]; then
                 log "Change detected: $(basename "$changed_file")"
-                if grep -qiE "subscription|checked_command|NoSubKey" "$changed_file" 2>/dev/null; then
+                if grep -qiE "subscription|checked_command|NoSubKey|noSubKeyHtml" "$changed_file" 2>/dev/null; then
                     apply_patches "$changed_file"
                 fi
             fi
