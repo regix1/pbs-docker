@@ -1,0 +1,47 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'VERSION'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Read version
+      id: version
+      run: |
+        VERSION=$(cat VERSION | tr -d '[:space:]')
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Version: ${VERSION}"
+
+    - name: Check if release exists
+      id: check
+      run: |
+        if gh release view "${{ steps.version.outputs.version }}" &>/dev/null; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "Release ${{ steps.version.outputs.version }} already exists, skipping"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "Release ${{ steps.version.outputs.version }} does not exist, creating"
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create release
+      if: steps.check.outputs.exists == 'false'
+      run: |
+        gh release create "${{ steps.version.outputs.version }}" \
+          --title "Proxmox Backup Server ${{ steps.version.outputs.version }}" \
+          --generate-notes
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
