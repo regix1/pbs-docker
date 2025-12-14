@@ -8,3 +8,6 @@ proxmox-backup-client*.tgz
 # Claude AI assistant files
 CLAUDE.md
 .claude/
+
+# Local Proxmox source checkout
+proxmox-backup/
